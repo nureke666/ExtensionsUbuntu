@@ -1,0 +1,6 @@
+/* Added locally: Blur My Shell replaces the banner's inline style (border-radius),
+   wiping this extension's width/font override, so the size is set here instead. */
+#notification-container .notification-banner {
+  width: 240px;
+  font-size: 65%;
+}

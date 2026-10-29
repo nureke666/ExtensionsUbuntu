@@ -1,0 +1,7 @@
+{
+  "uuid": "notification-island@nurik.local",
+  "name": "Notification Island",
+  "description": "Shows notifications as a compact pill in the center of the top panel, like the iPhone Dynamic Island. Critical notifications keep the stock banner.",
+  "shell-version": ["46"],
+  "version": 1
+}

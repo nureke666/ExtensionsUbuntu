@@ -1,0 +1,9 @@
+{
+  "uuid": "auto-tiling@nurik.local",
+  "name": "Auto Tiling",
+  "description": "i3-style automatic tiling: every new window splits the focused one. Keyboard-driven, with gaps and a border around the focused window.",
+  "shell-version": ["46"],
+  "session-modes": ["user", "unlock-dialog"],
+  "settings-schema": "org.gnome.shell.extensions.auto-tiling",
+  "version": 1
+}

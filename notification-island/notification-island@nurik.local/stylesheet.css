@@ -1,0 +1,30 @@
+.notification-island {
+  background-color: #000;
+  color: #fff;
+  border-radius: 999px;
+  padding: 0 16px 0 6px;
+  min-width: 140px;
+  max-width: 460px;
+  font-size: 10pt;
+}
+
+.notification-island:hover {
+  background-color: #1c1c1c;
+}
+
+.notification-island-box {
+  spacing: 8px;
+}
+
+.notification-island-icon {
+  icon-size: 20px;
+}
+
+.notification-island-title {
+  font-weight: bold;
+  max-width: 170px;
+}
+
+.notification-island-body {
+  color: #b5b5b5;
+}

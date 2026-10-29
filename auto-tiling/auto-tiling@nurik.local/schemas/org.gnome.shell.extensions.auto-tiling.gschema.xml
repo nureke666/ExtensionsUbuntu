@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.auto-tiling"
+          path="/org/gnome/shell/extensions/auto-tiling/">
+
+    <key name="gap-inner" type="u">
+      <default>8</default>
+      <range min="0" max="100"/>
+      <summary>Gap between neighbouring windows (px)</summary>
+    </key>
+    <key name="gap-outer" type="u">
+      <default>8</default>
+      <range min="0" max="100"/>
+      <summary>Gap between windows and the screen edges (px)</summary>
+    </key>
+
+    <key name="border-enabled" type="b">
+      <default>true</default>
+      <summary>Draw a border around the focused window</summary>
+    </key>
+    <key name="border-width" type="u">
+      <default>3</default>
+      <range min="1" max="20"/>
+      <summary>Border width (px)</summary>
+    </key>
+    <key name="border-color" type="s">
+      <default>'#7764d8'</default>
+      <summary>Border color (any CSS color)</summary>
+    </key>
+    <key name="border-radius" type="u">
+      <default>12</default>
+      <range min="0" max="40"/>
+      <summary>Corner radius of the window the border goes around (px)</summary>
+    </key>
+
+    <key name="floating-apps" type="as">
+      <default>[]</default>
+      <summary>Applications that never tile</summary>
+      <description>WM_CLASS or app id, e.g. 'org.gnome.Calculator'.</description>
+    </key>
+
+    <key name="overridden-settings" type="a{sv}">
+      <default>{}</default>
+      <summary>Internal: original values of GNOME settings changed while enabled</summary>
+      <description>Keyed by 'schema-id/key'. Restored on disable.</description>
+    </key>
+
+    <key name="focus-left" type="as">
+      <default><![CDATA[['<Super>Left']]]></default>
+      <summary>Focus the window on the left</summary>
+    </key>
+    <key name="focus-right" type="as">
+      <default><![CDATA[['<Super>Right']]]></default>
+      <summary>Focus the window on the right</summary>
+    </key>
+    <key name="focus-up" type="as">
+      <default><![CDATA[['<Super>Up']]]></default>
+      <summary>Focus the window above</summary>
+    </key>
+    <key name="focus-down" type="as">
+      <default><![CDATA[['<Super>Down']]]></default>
+      <summary>Focus the window below</summary>
+    </key>
+
+    <key name="swap-left" type="as">
+      <default><![CDATA[['<Super><Shift>Left']]]></default>
+      <summary>Swap with the window on the left</summary>
+    </key>
+    <key name="swap-right" type="as">
+      <default><![CDATA[['<Super><Shift>Right']]]></default>
+      <summary>Swap with the window on the right</summary>
+    </key>
+    <key name="swap-up" type="as">
+      <default><![CDATA[['<Super><Shift>Up']]]></default>
+      <summary>Swap with the window above</summary>
+    </key>
+    <key name="swap-down" type="as">
+      <default><![CDATA[['<Super><Shift>Down']]]></default>
+      <summary>Swap with the window below</summary>
+    </key>
+
+    <key name="resize-left" type="as">
+      <default><![CDATA[['<Super><Control>Left']]]></default>
+      <summary>Move a vertical border of the focused window to the left</summary>
+    </key>
+    <key name="resize-right" type="as">
+      <default><![CDATA[['<Super><Control>Right']]]></default>
+      <summary>Move a vertical border of the focused window to the right</summary>
+    </key>
+    <key name="resize-up" type="as">
+      <default><![CDATA[['<Super><Control>Up']]]></default>
+      <summary>Move a horizontal border of the focused window up</summary>
+    </key>
+    <key name="resize-down" type="as">
+      <default><![CDATA[['<Super><Control>Down']]]></default>
+      <summary>Move a horizontal border of the focused window down</summary>
+    </key>
+
+    <key name="toggle-split" type="as">
+      <default><![CDATA[['<Super>r']]]></default>
+      <summary>Toggle the split direction of the focused window's pair</summary>
+    </key>
+    <key name="toggle-floating" type="as">
+      <default><![CDATA[['<Super>f']]]></default>
+      <summary>Toggle floating for the focused window</summary>
+    </key>
+    <key name="equalize" type="as">
+      <default><![CDATA[['<Super>equal']]]></default>
+      <summary>Reset all splits on the current workspace to equal sizes</summary>
+    </key>
+    <key name="toggle-tiling" type="as">
+      <default><![CDATA[['<Super>t']]]></default>
+      <summary>Turn tiling on or off for the current workspace</summary>
+    </key>
+  </schema>
+</schemalist>
