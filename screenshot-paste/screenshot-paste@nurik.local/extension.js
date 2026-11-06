@@ -35,13 +35,13 @@ export default class ScreenshotPasteExtension extends Extension {
         this._busy = false;
         this._keyboard = Clutter.get_default_backend().get_default_seat()
             .create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
-        Main.wm.addKeybinding('shortcut', this._settings,
+        Main.wm.addKeybinding('paste-screenshot', this._settings,
             Meta.KeyBindingFlags.IGNORE_AUTOREPEAT, Shell.ActionMode.NORMAL,
             () => this._run().catch(e => logError(e, 'Screenshot Paste')));
     }
 
     disable() {
-        Main.wm.removeKeybinding('shortcut');
+        Main.wm.removeKeybinding('paste-screenshot');
         for (const id of this._timeouts)
             GLib.source_remove(id);
         this._timeouts = null;

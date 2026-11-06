@@ -62,12 +62,12 @@ eval_js "Main.extensionManager.disableExtension(\"screenshot-paste@nurik.local\"
 sleep 0.5
 
 echo "--- target window:"; cat "$T/target.log"
-echo "--- shell errors:"; grep -iE "JS ERROR|Screenshot Paste" "$T/shell.log"
+echo "--- shell errors:"; grep -iE "JS ERROR|Screenshot Paste|keybinding .paste-screenshot" "$T/shell.log"
 kill %2 $shell 2>/dev/null; wait 2>/dev/null
 
 grep -qE "^paste [0-9]+x[0-9]+$" "$T/target.log" &&
     sed -n "/^paste /,\$p" "$T/target.log" | grep -qx enter &&
-    ! grep -q "JS ERROR" "$T/shell.log"
+    ! grep -qE "JS ERROR|keybinding .paste-screenshot" "$T/shell.log"
 ' 2>"$T/session.log"
 status=$?
 [ $status -eq 0 ] && echo "OK: image pasted, then Enter" || echo "FAIL"

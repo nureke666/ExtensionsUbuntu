@@ -3,7 +3,7 @@
   <schema id="org.gnome.shell.extensions.screenshot-paste"
           path="/org/gnome/shell/extensions/screenshot-paste/">
 
-    <key name="shortcut" type="as">
+    <key name="paste-screenshot" type="as">
       <default><![CDATA[['<Alt>m']]]></default>
       <summary>Take a screenshot, paste it and press Enter</summary>
     </key>

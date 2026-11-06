@@ -36,8 +36,8 @@ gnome-extensions info screenshot-paste@nurik.local   # State: ACTIVE
 S="--schemadir $HOME/.local/share/gnome-shell/extensions/screenshot-paste@nurik.local/schemas"
 K=org.gnome.shell.extensions.screenshot-paste
 
-gsettings $S set $K shortcut "['<Alt>m']"   # сочетание клавиш
-gsettings $S set $K enter-delay 500         # пауза между Ctrl+V и Enter, мс
+gsettings $S set $K paste-screenshot "['<Alt>m']"   # сочетание клавиш
+gsettings $S set $K enter-delay 500                 # пауза между Ctrl+V и Enter, мс
 ```
 
 Если Enter срабатывает раньше, чем приложение успело принять картинку (например,
