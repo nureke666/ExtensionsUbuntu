@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.screenshot-paste"
+          path="/org/gnome/shell/extensions/screenshot-paste/">
+
+    <key name="shortcut" type="as">
+      <default><![CDATA[['<Alt>m']]]></default>
+      <summary>Take a screenshot, paste it and press Enter</summary>
+    </key>
+    <key name="enter-delay" type="u">
+      <default>500</default>
+      <range min="0" max="10000"/>
+      <summary>Pause between Ctrl+V and Enter (ms)</summary>
+      <description>Time the app needs to take the image before Enter is pressed.</description>
+    </key>
+  </schema>
+</schemalist>

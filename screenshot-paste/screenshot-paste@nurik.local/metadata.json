@@ -1,0 +1,8 @@
+{
+  "uuid": "screenshot-paste@nurik.local",
+  "name": "Screenshot Paste",
+  "description": "Alt+M: screenshot of the whole screen, pasted into the focused field and sent with Enter.",
+  "shell-version": ["46"],
+  "settings-schema": "org.gnome.shell.extensions.screenshot-paste",
+  "version": 1
+}
