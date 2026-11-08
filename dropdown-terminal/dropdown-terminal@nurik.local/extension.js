@@ -28,9 +28,8 @@ const state = {
     window: null,      // its window
 };
 const moduleOwner = {};
-// Clients of terminals that have exited. They are kept: when GJS collects one,
-// mutter's finalize runs inside the garbage collection, and the window
-// handling it sets off there is blocked by GJS.
+// Clients of terminals that have exited, kept so that GJS never collects one
+// while mutter may still have windows of it.
 const retiredClients = [];
 
 function trackWindow(window) {
@@ -183,6 +182,11 @@ export default class DropdownTerminalExtension extends Extension {
         } catch (e) {
             Main.notifyError('Dropdown Terminal: терминал не запустился', e.message);
             return;
+        } finally {
+            // The launcher keeps its copy of the terminal's end of the Wayland
+            // socket until closed: then the connection outlives the process
+            // (after `exit` the dead window stayed) until GJS collects it.
+            launcher.close();
         }
         state.client = client;
         state.subprocess = process;
