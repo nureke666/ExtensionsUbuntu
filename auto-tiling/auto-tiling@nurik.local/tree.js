@@ -99,6 +99,47 @@ export class Tree {
         this._replace(parent, sibling);
     }
 
+    // Puts `newId` into the slot of `oldId`.
+    replace(oldId, newId) {
+        const node = this._findLeaf(oldId);
+        if (node)
+            node.id = newId;
+    }
+
+    // Plain data for saving: {leaf: leafData(id)} or {orientation, ratio, children}.
+    toData(leafData) {
+        const walk = node => isLeaf(node)
+            ? {leaf: leafData(node.id)}
+            : {orientation: node.orientation, ratio: node.ratio, children: node.children.map(walk)};
+        return this.root ? walk(this.root) : null;
+    }
+
+    // Rebuilds the tree from toData() output. `leafId(leafData)` gives the id
+    // for a leaf or null to drop it; its sibling then takes its place.
+    // Throws on malformed data.
+    static fromData(data, leafId) {
+        const build = node => {
+            if (node && 'leaf' in node) {
+                const id = leafId(node.leaf);
+                return id === null ? null : leaf(id);
+            }
+            const orientation = node?.orientation;
+            if (!Object.values(Orientation).includes(orientation) ||
+                !Array.isArray(node.children) || node.children.length !== 2)
+                throw new Error('malformed layout');
+            const [first, second] = node.children.map(build);
+            if (!first || !second)
+                return first ?? second;
+            const result = split(orientation, first, second);
+            const ratio = Number(node.ratio);
+            result.ratio = Number.isFinite(ratio) ? Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio)) : 0.5;
+            return result;
+        };
+        const tree = new Tree();
+        tree.root = data ? build(data) : null;
+        return tree;
+    }
+
     swap(a, b) {
         const leafA = this._findLeaf(a);
         const leafB = this._findLeaf(b);

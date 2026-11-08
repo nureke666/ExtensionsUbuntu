@@ -19,6 +19,9 @@ export default class AutoTilingExtension extends Extension {
     }
 
     disable() {
+        // GNOME may call disable twice in a row when several extensions change at once.
+        if (!this._tiler)
+            return;
         this._keybindings.destroy();
         this._keybindings = null;
         this._border.destroy();

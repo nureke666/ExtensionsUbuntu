@@ -117,6 +117,36 @@ test('findNeighbor prefers overlapping, nearest windows', () => {
     assert.equal(findNeighbor(rects.get('A'), others('A'), Direction.LEFT), null);
 });
 
+test('toData and fromData keep the layout', () => {
+    const tree = build('A', 'B', 'C');
+    tree.resize('A', Direction.RIGHT, 0.2);
+    const data = JSON.parse(JSON.stringify(tree.toData(id => ({app: id}))));
+    const copy = Tree.fromData(data, leafData => leafData.app);
+    assert.deepEqual(copy.layout(AREA, NO_GAPS), tree.layout(AREA, NO_GAPS));
+    assert.equal(copy.root.parent, null);
+    assert.equal(copy.root.children[1].parent, copy.root);
+});
+
+test('fromData drops leaves and their siblings take the space', () => {
+    const data = build('A', 'B', 'C').toData(id => id);
+    const copy = Tree.fromData(data, id => id === 'B' ? null : id);
+    assert.deepEqual(copy.ids, ['A', 'C']);
+    assert.equal(copy.layout(AREA, NO_GAPS).get('C').height, 1168);
+    assert.ok(Tree.fromData(data, () => null).isEmpty);
+    assert.ok(Tree.fromData(null, id => id).isEmpty);
+});
+
+test('fromData rejects malformed data', () => {
+    assert.throws(() => Tree.fromData({orientation: 'diagonal', children: []}, id => id));
+    assert.throws(() => Tree.fromData({children: [{leaf: 1}]}, id => id));
+});
+
+test('replace puts a window into a slot', () => {
+    const tree = build('A', 'B', 'C');
+    tree.replace('B', 'D');
+    assert.deepEqual(tree.ids, ['A', 'D', 'C']);
+});
+
 test('normalizeAccelerator ignores modifier order and aliases', () => {
     assert.equal(normalizeAccelerator('<Super><Shift>Left'), normalizeAccelerator('<Shift><Super>left'));
     assert.equal(normalizeAccelerator('<Ctrl><Super>Up'), normalizeAccelerator('<Super><Control>Up'));
