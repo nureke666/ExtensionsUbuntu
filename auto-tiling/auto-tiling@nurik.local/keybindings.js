@@ -49,6 +49,17 @@ const FORCED_SETTINGS = [
 // has type 'mb', so it cannot be mistaken for a real value.
 const DEFAULT_MARKER_TYPE = 'mb';
 
+// An entry of 'overridden-settings': {original, written}; `written` is null
+// for entries saved by versions that kept only the original.
+function unpackSaved(entry) {
+    if (entry.get_type_string() !== '(vv)')
+        return {original: entry, written: null};
+    return {
+        original: entry.get_child_value(0).get_variant(),
+        written: entry.get_child_value(1).get_variant(),
+    };
+}
+
 function lookupSettings(schemaId) {
     const schema = Gio.SettingsSchemaSource.get_default().lookup(schemaId, true);
     return schema ? new Gio.Settings({settings_schema: schema}) : null;
@@ -79,24 +90,36 @@ export class Keybindings {
         this._restoreOverrides();
     }
 
+    // Each changed key is saved as (original, written): its value before we
+    // changed it (DEFAULT_MARKER_TYPE when it was at its default) and the value
+    // we wrote. Restoring puts the original back only while the key still holds
+    // what we wrote, so a key the user set meanwhile (fullscreen moved to F11)
+    // stays as the user set it.
     _overrideConflicts() {
-        // Values saved by an earlier run that never restored them (a crash)
-        // are the true originals, so they are kept rather than overwritten.
         const saved = this._settings.get_value('overridden-settings').deepUnpack();
-        const save = (schemaId, key, settings) => {
+        // Entries of older versions (original only) get what that version
+        // wrote now, while our keys are still the ones it used.
+        for (const [id, entry] of Object.entries(saved)) {
+            const {original, written} = unpackSaved(entry);
+            const slash = id.lastIndexOf('/');
+            const settings = lookupSettings(id.slice(0, slash));
+            if (written || !settings)
+                continue;
+            const wrote = this._writtenByOldVersion(id.slice(0, slash), id.slice(slash + 1), settings, original);
+            if (wrote)
+                saved[id] = new GLib.Variant('(vv)', [original, wrote]);
+        }
+        const write = (schemaId, key, settings, value) => {
             const id = `${schemaId}/${key}`;
-            if (!(id in saved)) {
-                saved[id] = settings.get_user_value(key) ??
-                    GLib.Variant.new_maybe(new GLib.VariantType('b'), null);
-            }
+            // An original saved by an earlier run that never restored it (a
+            // crash) is the true one, so it is kept.
+            const original = saved[id] ? unpackSaved(saved[id]).original
+                : settings.get_user_value(key) ?? GLib.Variant.new_maybe(new GLib.VariantType('b'), null);
+            saved[id] = new GLib.Variant('(vv)', [original, value]);
+            settings.set_value(key, value);
         };
 
-        const ours = new Set();
-        for (const name of Object.keys(ACTIONS)) {
-            for (const accelerator of this._settings.get_strv(name))
-                ours.add(normalizeAccelerator(accelerator));
-        }
-
+        const ours = this._ourAccelerators();
         for (const schemaId of SHORTCUT_SCHEMAS) {
             const settings = lookupSettings(schemaId);
             if (!settings)
@@ -107,19 +130,15 @@ export class Keybindings {
                     continue;
                 const accelerators = settings.get_strv(key);
                 const kept = accelerators.filter(a => !ours.has(normalizeAccelerator(a)));
-                if (kept.length === accelerators.length)
-                    continue;
-                save(schemaId, key, settings);
-                settings.set_strv(key, kept);
+                if (kept.length !== accelerators.length)
+                    write(schemaId, key, settings, new GLib.Variant('as', kept));
             }
         }
 
         for (const [schemaId, key, type, value] of FORCED_SETTINGS) {
             const settings = lookupSettings(schemaId);
-            if (!settings)
-                continue;
-            save(schemaId, key, settings);
-            settings.set_value(key, new GLib.Variant(type, value));
+            if (settings)
+                write(schemaId, key, settings, new GLib.Variant(type, value));
         }
 
         this._settings.set_value('overridden-settings', new GLib.Variant('a{sv}', saved));
@@ -127,17 +146,45 @@ export class Keybindings {
 
     _restoreOverrides() {
         const saved = this._settings.get_value('overridden-settings').deepUnpack();
-        for (const [id, value] of Object.entries(saved)) {
+        for (const [id, entry] of Object.entries(saved)) {
             const slash = id.lastIndexOf('/');
-            const settings = lookupSettings(id.slice(0, slash));
+            const schemaId = id.slice(0, slash);
+            const settings = lookupSettings(schemaId);
             const key = id.slice(slash + 1);
             if (!settings)
                 continue;
-            if (value.get_type_string() === DEFAULT_MARKER_TYPE)
+            const {original, written} = unpackSaved(entry);
+            const wrote = written ?? this._writtenByOldVersion(schemaId, key, settings, original);
+            if (wrote && !settings.get_value(key).equal(wrote))
+                continue;
+            if (original.get_type_string() === DEFAULT_MARKER_TYPE)
                 settings.reset(key);
             else
-                settings.set_value(key, value);
+                settings.set_value(key, original);
         }
         this._settings.set_value('overridden-settings', new GLib.Variant('a{sv}', {}));
+    }
+
+    _ourAccelerators() {
+        const ours = new Set();
+        for (const name of Object.keys(ACTIONS)) {
+            for (const accelerator of this._settings.get_strv(name))
+                ours.add(normalizeAccelerator(accelerator));
+        }
+        return ours;
+    }
+
+    // Versions before (original, written) saved only the original; what they
+    // wrote was the original without our keys, or the forced value.
+    _writtenByOldVersion(schemaId, key, settings, original) {
+        const forced = FORCED_SETTINGS.find(([s, k]) => s === schemaId && k === key);
+        if (forced)
+            return new GLib.Variant(forced[2], forced[3]);
+        const base = original.get_type_string() === DEFAULT_MARKER_TYPE
+            ? settings.get_default_value(key) : original;
+        if (base.get_type_string() !== 'as')
+            return null;
+        const ours = this._ourAccelerators();
+        return new GLib.Variant('as', base.deepUnpack().filter(a => !ours.has(normalizeAccelerator(a))));
     }
 }

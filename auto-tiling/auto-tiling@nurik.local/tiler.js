@@ -41,6 +41,9 @@ const MONITOR_DIRECTIONS = {
 const floatingSeqs = new Set();
 // Workspaces (or ALL_WORKSPACES) where the user turned tiling off:
 const disabledKeys = new Set();
+// Stable sequence -> smallest size the window turned out to accept (see
+// _learnMinSize); a re-enable would not see it again, the size does not change.
+const minSizes = new Map();
 
 function contains(rect, x, y) {
     return x >= rect.x && x < rect.x + rect.width &&
@@ -74,8 +77,12 @@ export class Tiler {
         this._lastFocused = null;
         this._grabbedWindow = null;
         this._relayoutId = 0;
-        // The slot each tiled window should have (see _onSizeChanged).
+        // The slot each tiled window should have (see _onFrameChanged).
         this._requested = new Map();
+        // Window -> the last few sizes asked of it, "WxH" (see _learnMinSize).
+        this._askedSizes = new Map();
+        // Window -> monotonic times of slots asked again (see _mayAskAgain).
+        this._reasks = new Map();
         // The focused window's move held back until covered windows have moved.
         this._settle = null;
         this._store = new LayoutStore(settings,
@@ -124,6 +131,8 @@ export class Tiler {
         this._windows.clear();
         this._trees.clear();
         this._requested.clear();
+        this._askedSizes.clear();
+        this._reasks.clear();
         this._lastFocused = null;
         this._grabbedWindow = null;
     }
@@ -180,7 +189,15 @@ export class Tiler {
             return;
         const tree = this._windows.get(window);
         this._dropPlaceholders(tree);
-        tree.resize(window, direction, RESIZE_STEP);
+        const before = this._layout(tree);
+        const undo = tree.resize(window, direction, RESIZE_STEP);
+        // A press that runs into a window's minimum moves nothing; the split
+        // must not drift towards its end unseen and jump there later.
+        const after = this._layout(tree);
+        if (undo && [...after].every(([id, rect]) => before.has(id) && sameRect(before.get(id), rect))) {
+            undo();
+            return;
+        }
         this._changed(tree);
     }
 
@@ -279,7 +296,8 @@ export class Tiler {
             'unmanaged', () => this._untrack(window),
             'workspace-changed', () => this._place(window),
             'notify::minimized', () => this._queueRelayout(),
-            'size-changed', () => this._onSizeChanged(window),
+            'size-changed', () => this._onFrameChanged(window),
+            'position-changed', () => this._onFrameChanged(window),
             'notify::resizeable', () => this._place(window),
             'notify::above', () => this._place(window),
             'notify::fullscreen', () => {
@@ -293,12 +311,66 @@ export class Tiler {
     }
 
     // Mutter ignores a move to the rect a window still has while an earlier
-    // move is not drawn yet, so once the client draws a size other than the
-    // last one asked for, the slot is asked for again.
-    _onSizeChanged(window) {
+    // move is not drawn yet; the client then draws that earlier size, and the
+    // slot is asked for again. A size the client picked itself (a terminal
+    // fitting whole cells, an app resizing itself) is left alone: asking again
+    // would make the two pull the size back and forth.
+    _onFrameChanged(window) {
         const requested = this._requested.get(window);
-        if (requested && this._windows.get(window) && !sameRect(window.get_frame_rect(), requested))
+        const tree = this._windows.get(window);
+        if (!requested || !tree || window === this._grabbedWindow)
+            return;
+        const frame = window.get_frame_rect();
+        if (this._learnMinSize(window, frame, requested))
             this._queueRelayout();
+        else if (!sameRect(frame, requested) && this._isStale(window, frame) && this._mayAskAgain(window))
+            this._queueRelayout();
+    }
+
+    // Whether the frame has a size asked of the window before the current one.
+    _isStale(window, frame) {
+        const asked = this._askedSizes.get(window) ?? [];
+        return asked.slice(0, -1).includes(`${frame.width}x${frame.height}`);
+    }
+
+    // At most a few repeated asks a second, should a client keep going back.
+    _mayAskAgain(window) {
+        const now = GLib.get_monotonic_time();
+        const asks = (this._reasks.get(window) ?? []).filter(time => now - time < 2 * GLib.USEC_PER_SEC);
+        if (asks.length >= 4)
+            return false;
+        this._reasks.set(window, [...asks, now]);
+        return true;
+    }
+
+    // Some clients cannot be as small as their slot (Chrome is at least 500 px
+    // wide) and would overlap a neighbour. A window that took the position
+    // asked for but kept a bigger size gets that size as its minimum, and the
+    // layout makes room for it. A window that later turns out smaller lowers
+    // its minimum. Not learned: from maximized or fullscreen windows, and from
+    // a size asked of the window before (a late frame for an older request,
+    // e.g. when several windows open at once). Returns whether it changed.
+    _learnMinSize(window, frame, requested) {
+        if (window.get_maximized() || window.fullscreen)
+            return false;
+        const seq = window.get_stable_sequence();
+        const old = minSizes.get(seq) ?? {width: 0, height: 0};
+        const moved = frame.x === requested.x && frame.y === requested.y && !this._isStale(window, frame);
+        const learn = (size, wanted, known) => {
+            if (moved && size > wanted)
+                return size;
+            if (known && size < known)
+                return size;
+            return known;
+        };
+        const min = {
+            width: learn(frame.width, requested.width, old.width),
+            height: learn(frame.height, requested.height, old.height),
+        };
+        if (min.width === old.width && min.height === old.height)
+            return false;
+        minSizes.set(seq, min);
+        return true;
     }
 
     _untrack(window) {
@@ -306,6 +378,9 @@ export class Tiler {
         window.disconnectObject(this);
         this._windows.delete(window);
         this._requested.delete(window);
+        this._askedSizes.delete(window);
+        this._reasks.delete(window);
+        minSizes.delete(window.get_stable_sequence());
         floatingSeqs.delete(window.get_stable_sequence());
         if (this._lastFocused === window)
             this._lastFocused = null;
@@ -569,7 +644,17 @@ export class Tiler {
     }
 
     _layout(tree) {
-        return tree.layout(this._workArea(tree), this._gaps(), this._isHidden);
+        // Half the work area at most: a minimum learned on a bigger monitor
+        // must not crowd out the rest here.
+        const area = this._workArea(tree);
+        const minSize = id => {
+            const min = id instanceof Placeholder ? null : minSizes.get(id.get_stable_sequence());
+            return min && {
+                width: Math.min(min.width, Math.floor(area.width / 2)),
+                height: Math.min(min.height, Math.floor(area.height / 2)),
+            };
+        };
+        return tree.layout(area, this._gaps(), this._isHidden, minSize);
     }
 
     _queueRelayout() {
@@ -602,12 +687,16 @@ export class Tiler {
 
         const focused = global.display.focus_window;
         const focusedRect = moves.find(([window]) => window === focused)?.[1];
+        const workspace = global.workspace_manager.get_active_workspace();
         // Geometry of the windows the focused one would cover, taken before
-        // they move (a pure move can apply at once).
+        // they move (a pure move can apply at once). Only windows on this
+        // workspace: one on another is not drawn and would only hold the
+        // focused window back until the timeout.
         const covered = new Map();
         for (const [window] of moves) {
             const frame = window.get_frame_rect();
-            if (focusedRect && window !== focused && containsRect(focusedRect, frame))
+            if (focusedRect && window !== focused &&
+                window.located_on_workspace(workspace) && containsRect(focusedRect, frame))
                 covered.set(window, frame);
         }
         for (const [window, rect] of moves) {
@@ -628,12 +717,23 @@ export class Tiler {
                 window.get_maximized() === Meta.MaximizeFlags.BOTH)
                 continue;
             // The slot the window should have now, also when it seems to have
-            // it already (see _onSizeChanged).
+            // it already (see _onFrameChanged).
             this._requested.set(window, rect);
+            // Also when it is in place already: after a re-enable or a
+            // maximize a late frame of this size must be known as old.
+            this._remember(window, rect);
             if (!sameRect(window.get_frame_rect(), rect))
                 moves.push([window, rect]);
         }
         return moves;
+    }
+
+    // Keeps the last sizes asked of the window, newest last.
+    _remember(window, rect) {
+        const size = `${rect.width}x${rect.height}`;
+        const asked = (this._askedSizes.get(window) ?? []).filter(s => s !== size);
+        asked.push(size);
+        this._askedSizes.set(window, asked.slice(-4));
     }
 
     _move(window, rect) {

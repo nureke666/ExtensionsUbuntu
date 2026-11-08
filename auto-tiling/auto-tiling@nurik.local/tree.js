@@ -152,10 +152,11 @@ export class Tree {
     // Moves the border of `id` that faces `direction` by `step` (a fraction of
     // the split). When the window has no border on that side, its opposite
     // border moves the same way instead, so the key still does something.
+    // Returns a function that undoes it, or null.
     resize(id, direction, step) {
         const node = this._findLeaf(id);
         if (!node)
-            return;
+            return null;
 
         const orientation = orientationOf(direction);
         const growsForward = direction === Direction.RIGHT || direction === Direction.DOWN;
@@ -167,14 +168,11 @@ export class Tree {
         for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
             if (parent.orientation !== orientation)
                 continue;
-            if (parent.children[facingIndex] === child) {
-                this._shift(parent, growsForward ? step : -step);
-                return;
-            }
+            if (parent.children[facingIndex] === child)
+                return this._shift(parent, growsForward ? step : -step);
             fallback ??= parent;
         }
-        if (fallback)
-            this._shift(fallback, growsForward ? step : -step);
+        return fallback ? this._shift(fallback, growsForward ? step : -step) : null;
     }
 
     toggleSplit(id) {
@@ -197,8 +195,10 @@ export class Tree {
 
     // Returns Map(id -> {x, y, width, height}) with integer geometry. Hidden
     // windows give their space to the rest; gaps.outer pads the area and
-    // gaps.inner separates neighbours.
-    layout(area, gaps, isHidden = () => false) {
+    // gaps.inner separates neighbours. `minSize(id)` ({width, height} or
+    // nothing) moves a split so that a window gets at least that much when
+    // the space allows.
+    layout(area, gaps, isHidden = () => false, minSize = () => null) {
         const rects = new Map();
         const visible = new Map();
         const countVisible = node => {
@@ -212,6 +212,27 @@ export class Tree {
         };
         if (!countVisible(this.root))
             return rects;
+
+        // Smallest size each visible subtree can take.
+        const minimum = new Map();
+        const measure = node => {
+            let result;
+            if (isLeaf(node)) {
+                const size = minSize(node.id);
+                result = {width: size?.width ?? 0, height: size?.height ?? 0};
+            } else {
+                const [a, b] = node.children.filter(child => visible.get(child)).map(measure);
+                if (!b)
+                    result = a;
+                else if (node.orientation === Orientation.HORIZONTAL)
+                    result = {width: a.width + gaps.inner + b.width, height: Math.max(a.height, b.height)};
+                else
+                    result = {width: Math.max(a.width, b.width), height: a.height + gaps.inner + b.height};
+            }
+            minimum.set(node, result);
+            return result;
+        };
+        measure(this.root);
 
         const place = (node, rect) => {
             if (isLeaf(node)) {
@@ -231,7 +252,14 @@ export class Tree {
             const horizontal = node.orientation === Orientation.HORIZONTAL;
             const total = horizontal ? rect.width : rect.height;
             const available = Math.max(0, total - gaps.inner);
-            const firstSize = Math.round(available * node.ratio);
+            const along = horizontal ? 'width' : 'height';
+            // Each child keeps at least MIN_RATIO of the split, minimums or not;
+            // when both minimums do not fit, the first child keeps its own.
+            const floor = Math.round(available * MIN_RATIO);
+            const firstMin = Math.min(minimum.get(first)[along], available - floor);
+            const secondMin = Math.min(minimum.get(second)[along], available - floor);
+            const firstSize = Math.max(firstMin, floor,
+                Math.min(Math.round(available * node.ratio), available - Math.max(secondMin, floor)));
             const secondSize = available - firstSize;
             if (horizontal) {
                 place(first, {...rect, width: firstSize});
@@ -252,7 +280,11 @@ export class Tree {
     }
 
     _shift(splitNode, delta) {
-        splitNode.ratio = Math.min(MAX_RATIO, Math.max(MIN_RATIO, splitNode.ratio + delta));
+        const before = splitNode.ratio;
+        splitNode.ratio = Math.min(MAX_RATIO, Math.max(MIN_RATIO, before + delta));
+        return () => {
+            splitNode.ratio = before;
+        };
     }
 
     _replace(oldNode, newNode) {
