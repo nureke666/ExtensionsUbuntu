@@ -74,6 +74,8 @@ export class Tiler {
         this._lastFocused = null;
         this._grabbedWindow = null;
         this._relayoutId = 0;
+        // The slot each tiled window should have (see _onSizeChanged).
+        this._requested = new Map();
         // The focused window's move held back until covered windows have moved.
         this._settle = null;
         this._store = new LayoutStore(settings,
@@ -121,6 +123,7 @@ export class Tiler {
         this._pendingActors.clear();
         this._windows.clear();
         this._trees.clear();
+        this._requested.clear();
         this._lastFocused = null;
         this._grabbedWindow = null;
     }
@@ -276,6 +279,7 @@ export class Tiler {
             'unmanaged', () => this._untrack(window),
             'workspace-changed', () => this._place(window),
             'notify::minimized', () => this._queueRelayout(),
+            'size-changed', () => this._onSizeChanged(window),
             'notify::resizeable', () => this._place(window),
             'notify::above', () => this._place(window),
             'notify::fullscreen', () => {
@@ -288,10 +292,20 @@ export class Tiler {
         this._place(window);
     }
 
+    // Mutter ignores a move to the rect a window still has while an earlier
+    // move is not drawn yet, so once the client draws a size other than the
+    // last one asked for, the slot is asked for again.
+    _onSizeChanged(window) {
+        const requested = this._requested.get(window);
+        if (requested && this._windows.get(window) && !sameRect(window.get_frame_rect(), requested))
+            this._queueRelayout();
+    }
+
     _untrack(window) {
         this._windows.get(window)?.remove(window);
         window.disconnectObject(this);
         this._windows.delete(window);
+        this._requested.delete(window);
         floatingSeqs.delete(window.get_stable_sequence());
         if (this._lastFocused === window)
             this._lastFocused = null;
@@ -613,6 +627,9 @@ export class Tiler {
             if (window === this._grabbedWindow || window.fullscreen ||
                 window.get_maximized() === Meta.MaximizeFlags.BOTH)
                 continue;
+            // The slot the window should have now, also when it seems to have
+            // it already (see _onSizeChanged).
+            this._requested.set(window, rect);
             if (!sameRect(window.get_frame_rect(), rect))
                 moves.push([window, rect]);
         }

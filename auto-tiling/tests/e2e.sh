@@ -26,6 +26,12 @@ EOF
     echo '{"uuid": "no-lock@test.local", "name": "no-lock", "description": "test", "shell-version": ["46"]}' \
         > "$ext/no-lock@test.local/metadata.json"
     echo 'export default class { enable() {} disable() {} }' > "$ext/no-lock@test.local/extension.js"
+    # GTK windows block up to 25 s on xdg-desktop-portal, which cannot work on
+    # this bus (after the shell restart it would talk to the dead one); this
+    # stub fails at once instead.
+    mkdir -p "$T/data/dbus-1/services"
+    printf '[D-BUS Service]\nName=org.freedesktop.portal.Desktop\nExec=/bin/false\n' \
+        > "$T/data/dbus-1/services/org.freedesktop.portal.Desktop.service"
     cat > "$ext/unsafe-mode@test.local/extension.js" <<'EOF'
 export default class {
     enable() { global.context.unsafe_mode = true; }
