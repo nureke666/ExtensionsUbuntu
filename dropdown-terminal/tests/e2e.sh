@@ -11,13 +11,20 @@ if [ "${1:-}" != inner ]; then
     T="$(mktemp -d)"
     trap 'fusermount -u "$T/run/gvfs" 2>/dev/null; rm -rf "$T"' EXIT
     ext="$T/data/gnome-shell/extensions"
-    mkdir -p "$ext/unsafe-mode@test.local" "$T/config"
+    mkdir -p "$ext/unsafe-mode@test.local" "$ext/no-lock@test.local" "$T/config"
     cp -r "$here/$uuid" "$ext/"
     glib-compile-schemas "$ext/$uuid/schemas"
-    # Turns on unsafe mode so the test can drive the shell through Eval.
+    # Turns on unsafe mode so the test can drive the shell through Eval, also
+    # on the lock screen.
     cat > "$ext/unsafe-mode@test.local/metadata.json" <<'EOF'
-{"uuid": "unsafe-mode@test.local", "name": "unsafe", "description": "test", "shell-version": ["46"]}
+{"uuid": "unsafe-mode@test.local", "name": "unsafe", "description": "test", "shell-version": ["46"],
+ "session-modes": ["user", "unlock-dialog"]}
 EOF
+    # An extension that stops on the lock screen, like most do: GNOME then
+    # disables and re-enables every extension enabled after it.
+    echo '{"uuid": "no-lock@test.local", "name": "no-lock", "description": "test", "shell-version": ["46"]}' \
+        > "$ext/no-lock@test.local/metadata.json"
+    echo 'export default class { enable() {} disable() {} }' > "$ext/no-lock@test.local/extension.js"
     cat > "$ext/unsafe-mode@test.local/extension.js" <<'EOF'
 export default class {
     enable() { global.context.unsafe_mode = true; }
@@ -32,6 +39,9 @@ EOF
 Name=org.freedesktop.portal.Desktop
 Exec=/bin/false
 EOF
+    # gvfs metadata would still be writing into $T when the test removes it.
+    printf '[D-BUS Service]\nName=org.gtk.vfs.Metadata\nExec=/bin/false\n' \
+        > "$T/data/dbus-1/services/org.gtk.vfs.Metadata.service"
     # Own runtime dir: the shell keeps its crash guard file there, and the
     # real session's one must not be touched.
     export XDG_RUNTIME_DIR="$T/run"
@@ -77,7 +87,7 @@ dset() {
 
 # Ubuntu's session mode turns on Tiling Assistant, the dock and the desktop
 # icons; the icons restart on a bare session and take the focus.
-gsettings set org.gnome.shell enabled-extensions "['$uuid', 'unsafe-mode@test.local']"
+gsettings set org.gnome.shell enabled-extensions "['$uuid', 'unsafe-mode@test.local', 'no-lock@test.local']"
 gsettings set org.gnome.shell disabled-extensions \
     "['tiling-assistant@ubuntu.com', 'ubuntu-dock@ubuntu.com', 'ding@rastersoft.com']"
 gsettings set org.gnome.shell welcome-dialog-last-shown-version "999"
@@ -108,6 +118,9 @@ const kb = seat.create_virtual_device(C.InputDeviceType.KEYBOARD_DEVICE);
 const ptr = seat.create_virtual_device(C.InputDeviceType.POINTER_DEVICE);
 Main.overview.hide();
 globalThis.dt = {
+    ext: () => Main.extensionManager.lookup("$uuid"),
+    adopted: () => dt.ext().stateObj._window,
+    others: () => dt.terms().filter(w => w !== dt.adopted()),
     terms: () => global.display.list_all_windows().filter(w =>
         w.get_window_type() === 0 && w.get_gtk_application_id() === "$app_id"),
     term: () => dt.terms()[0],
@@ -140,7 +153,7 @@ true
 EOF
 )" >/dev/null
 
-SUPER=125 RETURN=28
+SUPER=125 RETURN=28 CTRL=29 SHIFT=42 N=49
 uuid_js="\"$uuid\""
 
 # Keys do nothing until the overview the shell starts in has closed.
@@ -181,11 +194,16 @@ check "the terminal closes" '!dt.term()'
 press
 check "after closing, a press starts a new one" 'dt.shown() && dt.atTop(1)'
 
+# On monitor 1 every window is on all workspaces; the check needs monitor 0.
+eval_js 'dt.pointer(500, 500)' >/dev/null
+press
+press
+check "back on monitor 0" 'dt.shown() && dt.atTop(0)'
 eval_js "Main.extensionManager.disableExtension($uuid_js); true" >/dev/null
 check "disabling leaves the terminal open as an ordinary window" \
-    "Main.extensionManager.lookup($uuid_js).state !== 1 && dt.terms().length === 1 && !dt.term().above"
+    "dt.ext().state !== 1 && dt.terms().length === 1 && !dt.term().above && !dt.term().is_on_all_workspaces()"
 eval_js "Main.extensionManager.enableExtension($uuid_js); true" >/dev/null
-wait_for "Main.extensionManager.lookup($uuid_js).state === 1 && \"toggle\" in Main.wm._allowedKeybindings" ||
+wait_for "dt.ext().state === 1 && Main.wm._allowedKeybindings.toggle === imports.gi.Shell.ActionMode.NORMAL" ||
     echo "extension did not enable"
 # A press on the focused terminal hides it.
 eval_js 'dt.term().activate(global.get_current_time()); true' >/dev/null
@@ -193,6 +211,37 @@ wait_for 'global.display.focus_window === dt.term()' || echo "terminal did not t
 press
 check "after re-enabling, the running terminal is picked up, not a second one" \
     'dt.hidden() && dt.terms().length === 1 && dt.term().above'
+
+# A second window of the same terminal app stays an ordinary window, also
+# after a re-enable and a screen lock (GNOME re-enables the extension then).
+press
+wait_for 'dt.shown()' || echo "terminal did not show"
+eval_js "dt.key($CTRL, $SHIFT, $N)" >/dev/null
+check "Ctrl+Shift+N opens an ordinary terminal window" \
+    'dt.terms().length === 2 && dt.others().length === 1 && !dt.others()[0].above'
+eval_js 'globalThis.seq = dt.adopted().get_stable_sequence(); dt.adopted().activate(global.get_current_time()); true' >/dev/null
+eval_js "Main.extensionManager.disableExtension($uuid_js); true" >/dev/null
+wait_for 'dt.ext().state !== 1' || echo "extension did not stop"
+eval_js "Main.extensionManager.enableExtension($uuid_js); true" >/dev/null
+check "after re-enabling, the same window is the drop-down one" \
+    'dt.adopted()?.get_stable_sequence() === seq && dt.adopted().above && !dt.others()[0].above'
+eval_js 'globalThis.oldSettings = dt.ext().stateObj._settings; true' >/dev/null
+eval_js 'Main.screenShield.lock(false); true' >/dev/null
+wait_for 'Main.sessionMode.currentMode === "unlock-dialog"' || echo "the screen did not lock"
+eval_js 'Main.screenShield.deactivate(false); true' >/dev/null
+wait_for 'Main.sessionMode.currentMode !== "unlock-dialog"' || echo "the screen did not unlock"
+check "the lock re-enabled the extension" 'dt.ext().state === 1 && dt.ext().stateObj._settings !== oldSettings'
+check "and the same window is still the drop-down one, at the top" \
+    'dt.adopted()?.get_stable_sequence() === seq && dt.adopted().above && dt.adopted().is_on_all_workspaces() && !dt.others()[0].above'
+
+# A command that does not start must not block the next press.
+eval_js 'dt.terms().forEach(w => w.delete(global.get_current_time())); true' >/dev/null
+wait_for 'dt.terms().length === 0' || echo "terminals did not close"
+dset command "['/nonexistent/terminal']"
+press
+dset command "['env', 'GDK_BACKEND=wayland', 'gnome-terminal', '--app-id', '$app_id']"
+press
+check "after a command that failed, the next press starts the terminal" 'dt.shown()'
 
 kill $(jobs -p) 2>/dev/null
 wait 2>/dev/null

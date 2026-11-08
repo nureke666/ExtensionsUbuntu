@@ -37,5 +37,25 @@ if uuid in disabled:
 EOF
 gsettings set org.gnome.shell disable-user-extensions false
 
+# With Auto Tiling installed, the terminal is one of its floating apps, so it
+# never lands in the layout, not even for a frame before it goes on top.
+tiling="$HOME/.local/share/gnome-shell/extensions/auto-tiling@nurik.local/schemas"
+if [ -d "$tiling" ]; then
+    app_id="$(gsettings --schemadir "$dest/schemas" get org.gnome.shell.extensions.dropdown-terminal app-id)"
+    python3 -I - "$tiling" "${app_id//\'/}" <<'EOF'
+import ast
+import subprocess
+import sys
+
+schemas, app_id = sys.argv[1:]
+cmd = ['gsettings', '--schemadir', schemas]
+key = ['org.gnome.shell.extensions.auto-tiling', 'floating-apps']
+out = subprocess.run(cmd + ['get'] + key, check=True, capture_output=True, text=True).stdout
+apps = ast.literal_eval(out.replace('@as ', ''))
+if app_id not in apps:
+    subprocess.run(cmd + ['set'] + key + [str(apps + [app_id])], check=True)
+EOF
+fi
+
 echo "Готово: файлы в $dest, расширение включено."
 echo "Выйди из системы и зайди снова, чтобы GNOME его загрузил."

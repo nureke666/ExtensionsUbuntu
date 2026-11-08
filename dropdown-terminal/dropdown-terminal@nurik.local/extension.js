@@ -11,12 +11,24 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 // How long a press waits for the terminal it started before it may start another.
 const SPAWN_TIMEOUT_S = 15;
+// gnome-terminal's preferences are a separate app with no parent window.
+const OWN_APPS = ['org.gnome.Terminal.Preferences'];
+
+// The module outlives disable and enable (GNOME re-enables extensions on
+// screen lock), so the terminal is remembered here, by stable sequence: other
+// windows of the same terminal app must not take its place.
+let terminalSeq = null;
+// Until when (monotonic µs) the terminal just started may show up.
+let spawnDeadline = 0;
+
+function spawnPending() {
+    return GLib.get_monotonic_time() < spawnDeadline;
+}
 
 export default class DropdownTerminalExtension extends Extension {
     enable() {
         this._settings = this.getSettings();
         this._window = null;
-        this._spawnTimeoutId = 0;
         // Actors of new windows that have not drawn their first frame yet.
         this._pendingActors = new Set();
         this._idleIds = new Set();
@@ -32,13 +44,30 @@ export default class DropdownTerminalExtension extends Extension {
         Main.wm.addKeybinding('toggle', this._settings, Meta.KeyBindingFlags.NONE,
             Shell.ActionMode.NORMAL, () => this._toggle());
 
-        // A terminal from before a lock or a re-enable is picked up as it is.
-        const existing = global.display.list_all_windows().find(window => this._matches(window));
-        if (existing)
-            this._adopt(existing);
+        // The terminal from before a disable (screen lock, re-enable) is taken
+        // back and put in place again: meanwhile a tiling extension may have moved it.
+        const windows = global.display.list_all_windows().filter(window => this._matches(window));
+        if (terminalSeq !== null) {
+            const terminal = windows.find(window => window.get_stable_sequence() === terminalSeq);
+            terminalSeq = null;
+            if (terminal) {
+                this._adopt(terminal);
+                if (!terminal.minimized)
+                    this._place(terminal, terminal.get_monitor());
+            }
+        } else if (spawnPending() && windows.length) {
+            // Started just before the disable: the newest window of the app.
+            windows.sort((a, b) => b.get_stable_sequence() - a.get_stable_sequence());
+            this._adoptNew(windows[0]);
+        }
     }
 
     disable() {
+        // GNOME may call disable twice in a row when several extensions change at once.
+        if (!this._settings)
+            return;
+        // Remembered for the next enable in this session.
+        terminalSeq = this._window?.get_stable_sequence() ?? null;
         Main.wm.removeKeybinding('toggle');
         global.display.disconnectObject(this);
         this._settings.disconnectObject(this);
@@ -47,14 +76,16 @@ export default class DropdownTerminalExtension extends Extension {
         this._pendingActors.clear();
         this._idleIds.forEach(id => GLib.source_remove(id));
         this._idleIds.clear();
-        // The terminal stays open as an ordinary window.
+        // The terminal stays open as an ordinary window. Not on the lock screen:
+        // GNOME enables the extension again right away there.
         if (this._window) {
             this._window.disconnectObject(this);
-            this._window.unmake_above();
-            this._window.unstick();
+            if (!Main.sessionMode.isLocked) {
+                this._window.unmake_above();
+                this._window.unstick();
+            }
             this._window = null;
         }
-        this._clearSpawn();
         this._settings = null;
     }
 
@@ -73,20 +104,15 @@ export default class DropdownTerminalExtension extends Extension {
     _spawn() {
         // The terminal may take a few seconds to start; a second press must
         // not start another one.
-        if (this._spawnTimeoutId)
+        if (spawnPending())
             return;
-        Util.spawn(this._settings.get_strv('command'));
-        this._spawnTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, SPAWN_TIMEOUT_S, () => {
-            this._spawnTimeoutId = 0;
-            return GLib.SOURCE_REMOVE;
-        });
-    }
-
-    _clearSpawn() {
-        if (this._spawnTimeoutId) {
-            GLib.source_remove(this._spawnTimeoutId);
-            this._spawnTimeoutId = 0;
+        try {
+            Util.trySpawn(this._settings.get_strv('command'));
+        } catch (e) {
+            Main.notifyError('Dropdown Terminal: терминал не запустился', e.message);
+            return;
         }
+        spawnDeadline = GLib.get_monotonic_time() + SPAWN_TIMEOUT_S * GLib.USEC_PER_SEC;
     }
 
     _matches(window) {
@@ -95,8 +121,10 @@ export default class DropdownTerminalExtension extends Extension {
             (window.get_gtk_application_id() === appId || window.get_wm_class() === appId);
     }
 
+    // Only the terminal a press started is taken; other windows of the app
+    // (Ctrl+Shift+N) stay ordinary.
     _onWindowCreated(window) {
-        if (this._window)
+        if (this._window || !spawnPending())
             return;
         const actor = window.get_compositor_private();
         if (!actor) {
@@ -116,7 +144,8 @@ export default class DropdownTerminalExtension extends Extension {
                 // then (make_above) aborts mutter, so this waits for idle.
                 const id = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
                     this._idleIds.delete(id);
-                    if (!this._window && window.get_compositor_private() && this._matches(window))
+                    if (!this._window && spawnPending() && window.get_compositor_private() &&
+                        this._matches(window))
                         this._adoptNew(window);
                     return GLib.SOURCE_REMOVE;
                 });
@@ -127,7 +156,7 @@ export default class DropdownTerminalExtension extends Extension {
     }
 
     _adoptNew(window) {
-        this._clearSpawn();
+        spawnDeadline = 0;
         this._adopt(window);
         this._place(window);
         window.activate(global.get_current_time());
@@ -175,8 +204,10 @@ export default class DropdownTerminalExtension extends Extension {
         if (!window || window.minimized || !focused || focused === window ||
             !this._settings.get_boolean('hide-on-unfocus'))
             return;
-        // Its own dialogs (preferences, "close this terminal?") keep it open.
-        if (focused.get_transient_for() === window || this._matches(focused))
+        // Its own dialogs ("close this terminal?"), its preferences and its
+        // other windows keep it open.
+        if (focused.get_transient_for() === window || this._matches(focused) ||
+            OWN_APPS.includes(focused.get_gtk_application_id()))
             return;
         window.minimize();
     }
