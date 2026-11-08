@@ -8,6 +8,8 @@
 Как себя ведёт:
 - Свой терминал без рамки и заголовка, 70% ширины по центру и 45% высоты
   рабочей области, поверх остальных окон и на всех рабочих столах.
+- Шрифт — как в профиле gnome-terminal по умолчанию (если там не системный
+  шрифт), иначе системный моноширинный; меняется в настройках.
 - Его нет в панели задач и Alt+Tab, мышкой его не достать: только Super+Enter.
   Auto Tiling его не тайлит (а с версии из PR #6 и рамку фокуса вокруг него не
   рисует).
@@ -57,7 +59,7 @@ tmux — `tmux` (`sudo apt install tmux`). Нет tmux — запускаетс�
 «Расширения» → Dropdown Terminal → шестерёнка, или
 `gnome-extensions prefs dropdown-terminal@nurik.local`:
 - что внутри: tmux или обычная оболочка (со следующего запуска терминала);
-- ширина и высота в процентах экрана, непрозрачность фона;
+- ширина и высота в процентах экрана, непрозрачность фона, шрифт;
 - прятать, когда фокус уходит на другое окно;
 - клавиша (по умолчанию Super+Enter).
 
@@ -71,6 +73,7 @@ gsettings $S set $K session tmux          # или plain
 gsettings $S set $K width 70              # % ширины
 gsettings $S set $K height 45             # % высоты
 gsettings $S set $K opacity 95            # % непрозрачности фона
+gsettings $S set $K font 'Noto Mono 10'   # пусто — как в gnome-terminal
 gsettings $S set $K hide-on-unfocus false
 gsettings $S set $K toggle "['<Super>Return']"
 ```
@@ -96,6 +99,7 @@ dropdown-terminal/
 └── dropdown-terminal@nurik.local/
     ├── extension.js                 запуск, показ, прятанье, место на экране
     ├── terminal.js                  сам терминал: GTK3 + VTE, без рамки
+    ├── fonts.js                     шрифт по умолчанию: из профиля gnome-terminal
     ├── tmux.conf                    конфиг tmux для режима tmux
     ├── prefs.js                     окно настроек
     └── schemas/                     настройки

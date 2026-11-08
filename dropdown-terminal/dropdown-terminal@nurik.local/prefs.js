@@ -4,8 +4,11 @@ import Adw from 'gi://Adw';
 import Gdk from 'gi://Gdk';
 import Gio from 'gi://Gio';
 import Gtk from 'gi://Gtk';
+import Pango from 'gi://Pango';
 
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
+
+import {defaultFontName, watchDefaultFont} from './fonts.js';
 
 const SESSIONS = [
     ['tmux', 'tmux', 'Сессия остаётся: закрыл окно (Alt+F4) — при следующем Super+Enter всё на месте; ' +
@@ -65,6 +68,7 @@ function windowGroup(settings) {
     group.add(spinRow(settings, 'width', 'Ширина, % экрана', 20, 100));
     group.add(spinRow(settings, 'height', 'Высота, % экрана', 15, 100));
     group.add(spinRow(settings, 'opacity', 'Непрозрачность фона, %', 50, 100));
+    group.add(fontRow(settings));
     const hide = new Adw.SwitchRow({
         title: 'Прятать, когда фокус уходит',
         subtitle: 'Кликнул в другое окно — терминал уезжает наверх',
@@ -72,6 +76,50 @@ function windowGroup(settings) {
     settings.bind('hide-on-unfocus', hide, 'active', Gio.SettingsBindFlags.DEFAULT);
     group.add(hide);
     return group;
+}
+
+// Only monospace fonts; it shows the font in use, also when none is set here.
+// Reset goes back to following gnome-terminal.
+function fontRow(settings) {
+    const row = new Adw.ActionRow({title: 'Шрифт'});
+    const filter = Gtk.CustomFilter.new(item => item instanceof Pango.FontFamily
+        ? item.is_monospace() : item.get_family().is_monospace());
+    const button = new Gtk.FontDialogButton({
+        dialog: new Gtk.FontDialog({title: 'Шрифт терминала', filter}),
+        level: Gtk.FontLevel.FONT,
+        valign: Gtk.Align.CENTER,
+    });
+    const reset = new Gtk.Button({
+        icon_name: 'edit-undo-symbolic',
+        valign: Gtk.Align.CENTER,
+        tooltip_text: 'Как в gnome-terminal',
+        css_classes: ['flat'],
+    });
+    reset.connect('clicked', () => settings.reset('font'));
+    // Set while the button is updated from the settings, not by the user.
+    let syncing = false;
+    const sync = () => {
+        const own = settings.get_string('font');
+        row.subtitle = own ? '' : 'Как в gnome-terminal';
+        reset.visible = !!own;
+        const name = own || defaultFontName();
+        if (button.font_desc?.to_string() !== name) {
+            syncing = true;
+            button.font_desc = Pango.FontDescription.from_string(name);
+            syncing = false;
+        }
+    };
+    sync();
+    settings.connect('changed::font', sync);
+    watchDefaultFont(sync);
+    button.connect('notify::font-desc', () => {
+        const value = button.font_desc?.to_string() ?? '';
+        if (!syncing && value && value !== settings.get_string('font'))
+            settings.set_string('font', value);
+    });
+    row.add_suffix(button);
+    row.add_suffix(reset);
+    return row;
 }
 
 function keyGroup(settings, window) {

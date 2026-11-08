@@ -9,13 +9,17 @@ import Gtk from 'gi://Gtk?version=3.0';
 import Pango from 'gi://Pango';
 import Vte from 'gi://Vte?version=2.91';
 
+import {defaultFontName, watchDefaultFont} from './fonts.js';
+
 const dir = GLib.path_get_dirname(GLib.filename_from_uri(import.meta.url)[0]);
 const schemas = Gio.SettingsSchemaSource.new_from_directory(`${dir}/schemas`,
     Gio.SettingsSchemaSource.get_default(), false);
 const settings = new Gio.Settings({
     settings_schema: schemas.lookup('org.gnome.shell.extensions.dropdown-terminal', false),
 });
-const desktop = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
+function fontName() {
+    return settings.get_string('font') || defaultFontName();
+}
 
 // Catppuccin Mocha.
 const FOREGROUND = '#cdd6f4';
@@ -72,11 +76,12 @@ app.connect('activate', () => {
     const applyLook = () => {
         terminal.set_colors(rgba(FOREGROUND), rgba(BACKGROUND, settings.get_uint('opacity') / 100),
             PALETTE.map(spec => rgba(spec)));
-        terminal.set_font(Pango.FontDescription.from_string(desktop.get_string('monospace-font-name')));
+        terminal.set_font(Pango.FontDescription.from_string(fontName()));
     };
     applyLook();
     settings.connect('changed::opacity', applyLook);
-    desktop.connect('changed::monospace-font-name', applyLook);
+    settings.connect('changed::font', applyLook);
+    watchDefaultFont(applyLook);
 
     const css = new Gtk.CssProvider();
     css.load_from_data(new TextEncoder().encode('vte-terminal { padding: 6px 10px; }'));

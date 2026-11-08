@@ -28,6 +28,11 @@
       <range min="15" max="100"/>
       <summary>Height, percent of the work area</summary>
     </key>
+    <key name="font" type="s">
+      <default>''</default>
+      <summary>Font, e.g. 'Noto Mono 10'</summary>
+      <description>Empty: the font of the default gnome-terminal profile, or the system monospace font.</description>
+    </key>
     <key name="opacity" type="u">
       <default>95</default>
       <range min="50" max="100"/>
