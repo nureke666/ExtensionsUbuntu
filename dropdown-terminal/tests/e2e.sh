@@ -207,6 +207,33 @@ press
 check "with session = plain a press starts a plain shell" 'dt.shown()'
 shell_check "with no tmux" '! tmuxd has-session -t dropdown'
 
+# The terminal closing in ways that once broke things: while it slides away,
+# with hide-on-unfocus on, and while the extension is off (enabling then
+# crashed the shell on the dead window). Other windows open cleanly after.
+wait_for 'dt.shown()' || echo "terminal did not show"
+press
+eval_js 'dt.term().delete(global.get_current_time()); true' >/dev/null
+check "a terminal closed while sliding away is gone" '!dt.term()'
+dset hide-on-unfocus true
+press
+wait_for 'dt.shown()' || echo "terminal did not show"
+eval_js 'dt.term().delete(global.get_current_time()); true' >/dev/null
+check "a terminal closed with hide-on-unfocus on is gone" '!dt.term()'
+dset hide-on-unfocus false
+WAYLAND_DISPLAY=dt-e2e GDK_BACKEND=wayland DISPLAY= python3 "$here/tests/win.py" >/dev/null 2>&1 &
+wait_for 'global.display.list_all_windows().filter(w => w.title === "other").length === 2' || echo "window did not open"
+press
+wait_for 'dt.shown()' || echo "terminal did not show"
+eval_js "Main.extensionManager.disableExtension(\"$uuid\"); true" >/dev/null
+wait_for 'dt.ext().state !== 1' || echo "extension did not stop"
+eval_js 'dt.term().delete(global.get_current_time()); true' >/dev/null
+wait_for '!dt.term()' || echo "terminal did not close"
+eval_js "Main.extensionManager.enableExtension(\"$uuid\"); true" >/dev/null
+wait_for 'dt.ext().state === 1' || echo "extension did not enable"
+press
+check "a terminal closed while the extension was off is forgotten, a press starts a new one" \
+    'dt.shown() && dt.atTop(0)'
+
 eval_js "Main.extensionManager.disableExtension(\"$uuid\"); true" >/dev/null
 check "disabling leaves the terminal open as an ordinary window" \
     'dt.ext().state !== 1 && !dt.term().above && !dt.term().is_skip_taskbar() && !dt.term().is_on_all_workspaces()'
@@ -214,19 +241,30 @@ eval_js "Main.extensionManager.enableExtension(\"$uuid\"); true" >/dev/null
 wait_for 'dt.ext().state === 1' || echo "extension did not enable"
 check "enabling takes it back" 'dt.term().above && dt.term().is_skip_taskbar() && dt.atTop(0)'
 
+# On the lock screen GNOME re-enables us when no-lock (enabled before us now)
+# stops; the terminal must stay above and out of the list meanwhile, or
+# Auto Tiling, which also runs there, would tile it.
+eval_js "Main.extensionManager.disableExtension(\"$uuid\"); true" >/dev/null
+wait_for 'dt.ext().state !== 1' || echo "extension did not stop"
+eval_js "Main.extensionManager.enableExtension(\"$uuid\"); true" >/dev/null
+wait_for 'dt.ext().state === 1 && dt.atTop(0)' || echo "extension did not enable"
 eval_js 'globalThis.seq = dt.term().get_stable_sequence(); globalThis.oldSettings = dt.ext().stateObj._settings; true' >/dev/null
 eval_js 'Main.screenShield.lock(false); true' >/dev/null
 wait_for 'Main.sessionMode.currentMode === "unlock-dialog"' || echo "the screen did not lock"
+check "while locked it is re-enabled and the terminal stays above, out of the list" \
+    'dt.ext().state === 1 && dt.ext().stateObj._settings !== oldSettings && dt.term().above && dt.term().is_skip_taskbar()'
 eval_js 'Main.screenShield.deactivate(false); true' >/dev/null
 wait_for 'Main.sessionMode.currentMode !== "unlock-dialog"' || echo "the screen did not unlock"
-check "the lock re-enabled the extension" 'dt.ext().state === 1 && dt.ext().stateObj._settings !== oldSettings'
 check "and the terminal is the same one, still at the top" \
     'dt.term().get_stable_sequence() === seq && dt.term().above && dt.term().is_skip_taskbar() && dt.atTop(0)'
 
 kill $(jobs -p) 2>/dev/null
 tmuxd kill-server
 wait 2>/dev/null
-if grep -E "JS ERROR|Bail out|libmutter-CRITICAL|Dropdown Terminal:" "$T/shell.log"; then
+# Up to the shell's own shutdown: what its last garbage collection says then
+# is not seen by anyone.
+if sed '/Shutting down GNOME Shell/,$d' "$T/shell.log" |
+    grep -E "JS ERROR|Bail out|CRITICAL|crashed|Dropdown Terminal:|dropdown-terminal@nurik.local"; then
     echo "FAIL errors in the shell log"
     failed=1
 fi

@@ -79,7 +79,7 @@ app.connect('activate', () => {
     desktop.connect('changed::monospace-font-name', applyLook);
 
     const css = new Gtk.CssProvider();
-    css.load_from_data('vte-terminal { padding: 6px 10px; }', -1);
+    css.load_from_data(new TextEncoder().encode('vte-terminal { padding: 6px 10px; }'));
     terminal.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     // Ctrl+Shift+C/V copy and paste, Ctrl+plus/minus/0 zoom.

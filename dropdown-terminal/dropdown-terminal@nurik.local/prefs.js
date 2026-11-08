@@ -8,9 +8,9 @@ import Gtk from 'gi://Gtk';
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 const SESSIONS = [
-    ['tmux', 'tmux: сессия остаётся', 'Закрыл окно (Alt+F4) — при следующем Super+Enter всё на месте; ' +
+    ['tmux', 'tmux', 'Сессия остаётся: закрыл окно (Alt+F4) — при следующем Super+Enter всё на месте; ' +
         'exit закрывает и сессию. Колёсико листает вывод; копировать в буфер — выделяй с Shift.'],
-    ['plain', 'Обычная оболочка', 'Как в любом терминале: закрыл окно — всё внутри закрылось.'],
+    ['plain', 'Оболочка', 'Как в любом терминале: закрыл окно — всё внутри закрылось.'],
 ];
 
 export default class DropdownTerminalPreferences extends ExtensionPreferences {
@@ -18,7 +18,7 @@ export default class DropdownTerminalPreferences extends ExtensionPreferences {
         const settings = this.getSettings();
         // The window keeps the settings alive for the bindings.
         window._settings = settings;
-        window.set_default_size(560, 640);
+        window.set_default_size(600, 660);
         const page = new Adw.PreferencesPage({title: 'Выпадающий терминал', icon_name: 'utilities-terminal-symbolic'});
         page.add(sessionGroup(settings));
         page.add(windowGroup(settings));
