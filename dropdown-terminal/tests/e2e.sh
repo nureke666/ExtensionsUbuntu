@@ -199,6 +199,13 @@ press
 check "a press starts the terminal again" 'dt.shown() && dt.atTop(0)'
 shell_check "and it is back in the same tmux session" '[ "$(tmuxd list-clients -t dropdown | wc -l)" = 1 ]'
 
+# exit in the shell closes the window, and the next press starts a new one
+# (the window of the dead terminal used to stay).
+tmuxd send-keys -t dropdown 'exit' Enter
+check "exit in tmux closes the window at once" '!dt.term()' 2
+press
+check "a press after exit starts a new terminal" 'dt.shown() && dt.atTop(0)'
+
 dset session plain
 eval_js 'dt.term().delete(global.get_current_time()); true' >/dev/null
 wait_for '!dt.term()' || echo "terminal did not close"
@@ -206,6 +213,12 @@ tmuxd kill-server
 press
 check "with session = plain a press starts a plain shell" 'dt.shown()'
 shell_check "with no tmux" '! tmuxd has-session -t dropdown'
+sleep 1
+# e, x, i, t, Enter typed into the shell.
+eval_js 'dt.key(18) && dt.key(45) && dt.key(23) && dt.key(20) && dt.key(28)' >/dev/null
+check "exit in the plain shell closes the window at once" '!dt.term()' 2
+press
+check "and a press starts a new one" 'dt.shown()'
 
 # The terminal closing in ways that once broke things: while it slides away,
 # with hide-on-unfocus on, and while the extension is off (enabling then
