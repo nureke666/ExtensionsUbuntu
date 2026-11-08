@@ -39,6 +39,16 @@
       <description>WM_CLASS or app id, e.g. 'org.gnome.Calculator'.</description>
     </key>
 
+    <key name="remember-layout" type="b">
+      <default>true</default>
+      <summary>Bring the layouts back after the next login</summary>
+      <description>A window that opens on the same workspace and monitor takes the slot its app had.</description>
+    </key>
+    <key name="saved-layouts" type="s">
+      <default>''</default>
+      <summary>Internal: saved layouts as JSON</summary>
+    </key>
+
     <key name="overridden-settings" type="a{sv}">
       <default>{}</default>
       <summary>Internal: original values of GNOME settings changed while enabled</summary>

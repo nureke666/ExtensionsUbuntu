@@ -8,8 +8,10 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
+import {LayoutStore, Placeholder, appId} from './layouts.js';
 import {Tree, findNeighbor} from './tree.js';
 
 // Fraction of a split that one resize key press moves the border by.
@@ -32,6 +34,13 @@ const MONITOR_DIRECTIONS = {
     up: Meta.DisplayDirection.UP,
     down: Meta.DisplayDirection.DOWN,
 };
+
+// User choices that must outlive a disable and enable inside the session
+// (GNOME does that on screen lock); the module stays loaded meanwhile.
+// Stable sequences of windows the user switched to floating:
+const floatingSeqs = new Set();
+// Workspaces (or ALL_WORKSPACES) where the user turned tiling off:
+const disabledKeys = new Set();
 
 function contains(rect, x, y) {
     return x >= rect.x && x < rect.x + rect.width &&
@@ -59,9 +68,6 @@ export class Tiler {
         this._trees = new Map();
         // Tracked window -> the Tree it is tiled in, or null while it floats.
         this._windows = new Map();
-        // Windows the user switched to floating.
-        this._floating = new Set();
-        this._disabledWorkspaces = new Set();
         // Actors of new windows that have not drawn their first frame yet.
         this._pendingActors = new Set();
         // New windows split the last focused tiled window.
@@ -70,7 +76,13 @@ export class Tiler {
         this._relayoutId = 0;
         // The focused window's move held back until covered windows have moved.
         this._settle = null;
-        this._isHidden = window => window.minimized;
+        this._store = new LayoutStore(settings,
+            new Set(global.display.list_all_windows().map(window => window.get_stable_sequence())),
+            this._connectedMonitors());
+        // Idle sources of new windows waiting to be unmaximized.
+        this._unmaximizeIds = new Set();
+        // Placeholders of saved layouts take no space until their app opens.
+        this._isHidden = id => id instanceof Placeholder || id.minimized;
 
         global.display.connectObject(
             'window-created', (_display, window) => this._onWindowCreated(window),
@@ -94,6 +106,10 @@ export class Tiler {
             this._relayoutId = 0;
         }
         this._cancelSettle();
+        this._unmaximizeIds.forEach(id => GLib.source_remove(id));
+        this._unmaximizeIds.clear();
+        this._store.stash(this._trees);
+        this._store.destroy();
         global.display.disconnectObject(this);
         global.workspace_manager.disconnectObject(this);
         this._settings.disconnectObject(this);
@@ -105,8 +121,6 @@ export class Tiler {
         this._pendingActors.clear();
         this._windows.clear();
         this._trees.clear();
-        this._floating.clear();
-        this._disabledWorkspaces.clear();
         this._lastFocused = null;
         this._grabbedWindow = null;
     }
@@ -145,7 +159,7 @@ export class Tiler {
         const target = from && findNeighbor(from, rects, direction);
         if (target) {
             tree.swap(window, target);
-            this._queueRelayout();
+            this._changed(tree);
             return;
         }
         // Not the desktop icons and other helper windows.
@@ -161,21 +175,27 @@ export class Tiler {
         const window = this._focusedTiled();
         if (!window)
             return;
-        this._windows.get(window).resize(window, direction, RESIZE_STEP);
-        this._queueRelayout();
+        const tree = this._windows.get(window);
+        this._dropPlaceholders(tree);
+        tree.resize(window, direction, RESIZE_STEP);
+        this._changed(tree);
     }
 
     toggleSplit() {
         const window = this._focusedTiled();
         if (!window)
             return;
-        this._windows.get(window).toggleSplit(window);
-        this._queueRelayout();
+        const tree = this._windows.get(window);
+        this._dropPlaceholders(tree);
+        tree.toggleSplit(window);
+        this._changed(tree);
     }
 
     equalize() {
-        this._trees.get(this._currentKey())?.forEach(tree => tree.equalize());
-        this._queueRelayout();
+        this._trees.get(this._currentKey())?.forEach(tree => {
+            tree.equalize();
+            this._changed(tree);
+        });
     }
 
     toggleFloating() {
@@ -183,12 +203,13 @@ export class Tiler {
         if (!window || !this._windows.has(window))
             return;
 
-        if (this._windows.get(window)) {
-            this._floating.add(window);
+        const tree = this._windows.get(window);
+        if (tree) {
+            floatingSeqs.add(window.get_stable_sequence());
             this._place(window);
+            this._changed(tree);
             this._centerFloating(window);
-        } else if (this._floating.has(window)) {
-            this._floating.delete(window);
+        } else if (floatingSeqs.delete(window.get_stable_sequence())) {
             this._place(window);
         }
         // Anything else floats by rule (dialogs, fixed-size windows, ...).
@@ -196,11 +217,11 @@ export class Tiler {
 
     toggleTiling() {
         const key = this._currentKey();
-        const enable = this._disabledWorkspaces.has(key);
+        const enable = disabledKeys.has(key);
         if (enable)
-            this._disabledWorkspaces.delete(key);
+            disabledKeys.delete(key);
         else
-            this._disabledWorkspaces.add(key);
+            disabledKeys.add(key);
 
         [...this._windows.keys()]
             .filter(window => this._workspaceKey(window) === key)
@@ -227,14 +248,23 @@ export class Tiler {
                 this._pendingActors.delete(actor);
                 actor.disconnectObject(this);
                 this._track(window);
-                // Apps that remember being maximized (browsers, editors) and
-                // big windows GNOME maximizes itself open over everything;
-                // a new window takes its slot instead.
-                if (this._windows.get(window) && window.get_maximized() === Meta.MaximizeFlags.BOTH)
-                    window.unmaximize(Meta.MaximizeFlags.BOTH);
+                this._unmaximizeNew(window);
             },
             'destroy', () => this._pendingActors.delete(actor),
             this);
+    }
+
+    // Apps that remember being maximized (browsers, editors) and big windows
+    // GNOME maximizes itself open over everything; a new window takes its slot
+    // instead. Not inside first-frame: changing the window there can crash mutter.
+    _unmaximizeNew(window) {
+        const id = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            this._unmaximizeIds.delete(id);
+            if (this._windows.get(window) && window.get_maximized() === Meta.MaximizeFlags.BOTH)
+                window.unmaximize(Meta.MaximizeFlags.BOTH);
+            return GLib.SOURCE_REMOVE;
+        });
+        this._unmaximizeIds.add(id);
     }
 
     _track(window) {
@@ -247,6 +277,7 @@ export class Tiler {
             'workspace-changed', () => this._place(window),
             'notify::minimized', () => this._queueRelayout(),
             'notify::resizeable', () => this._place(window),
+            'notify::above', () => this._place(window),
             'notify::fullscreen', () => {
                 this._place(window);
                 this._queueRelayout();
@@ -261,7 +292,7 @@ export class Tiler {
         this._windows.get(window)?.remove(window);
         window.disconnectObject(this);
         this._windows.delete(window);
-        this._floating.delete(window);
+        floatingSeqs.delete(window.get_stable_sequence());
         if (this._lastFocused === window)
             this._lastFocused = null;
         if (this._grabbedWindow === window)
@@ -283,13 +314,21 @@ export class Tiler {
 
         current?.remove(window);
         if (tree) {
-            const target = this._lastFocused !== window &&
-                this._windows.get(this._lastFocused) === tree ? this._lastFocused : null;
-            tree.insert(window, target, this._workArea(tree), this._isHidden);
+            const placeholder = this._placeholderFor(tree, window);
+            if (placeholder) {
+                tree.replace(placeholder, window);
+            } else {
+                const target = this._lastFocused !== window &&
+                    this._windows.get(this._lastFocused) === tree ? this._lastFocused : null;
+                tree.insert(window, target, this._workArea(tree), this._isHidden);
+            }
         }
         this._windows.set(window, tree);
         if (tree && global.display.focus_window === window)
             this._lastFocused = window;
+        // A window that only leaves its tree is not saved (see LayoutStore.save).
+        if (tree)
+            this._save();
         this._queueRelayout();
     }
 
@@ -313,19 +352,25 @@ export class Tiler {
 
     _shouldTile(window) {
         const key = this._workspaceKey(window);
-        if (!key || this._disabledWorkspaces.has(key) || window.get_monitor() < 0)
+        if (!key || disabledKeys.has(key) || window.get_monitor() < 0)
             return false;
         if (window.get_window_type() !== Meta.WindowType.NORMAL)
             return false;
         if (window.get_transient_for() || window.is_attached_dialog())
             return false;
-        if (window.is_skip_taskbar() || !this._isResizable(window))
+        // Always-on-top windows (a drop-down terminal, a video) float over the rest.
+        if (window.is_skip_taskbar() || window.above || !this._isResizable(window))
             return false;
-        if (this._floating.has(window))
+        if (floatingSeqs.has(window.get_stable_sequence()))
             return false;
 
         const floatingApps = this._settings.get_strv('floating-apps');
-        const ids = [window.get_wm_class(), window.get_wm_class_instance(), window.get_gtk_application_id()];
+        // The settings window adds .desktop ids; the tracker maps windows to
+        // them (StartupWMClass and the like).
+        const desktopId = Shell.WindowTracker.get_default().get_window_app(window)?.get_id()
+            ?.replace(/\.desktop$/, '');
+        const ids = [window.get_wm_class(), window.get_wm_class_instance(),
+            window.get_gtk_application_id(), desktopId];
         return !ids.some(id => id && floatingApps.includes(id));
     }
 
@@ -345,6 +390,7 @@ export class Tiler {
         if (!tree) {
             // Remembers where it lives, for its work area.
             tree = Object.assign(new Tree(), {workspace: key, monitor});
+            this._store.restore(tree, this._savedKey(tree));
             monitors.set(monitor, tree);
         }
         return tree;
@@ -359,9 +405,9 @@ export class Tiler {
             if (!alive.has(workspace))
                 this._trees.delete(workspace);
         }
-        for (const workspace of [...this._disabledWorkspaces]) {
+        for (const workspace of [...disabledKeys]) {
             if (!alive.has(workspace))
-                this._disabledWorkspaces.delete(workspace);
+                disabledKeys.delete(workspace);
         }
     }
 
@@ -377,8 +423,17 @@ export class Tiler {
     }
 
     _onSettingChanged(key) {
-        if (key === 'gap-inner' || key === 'gap-outer')
+        if (key === 'gap-inner' || key === 'gap-outer') {
             this._queueRelayout();
+        } else if (key === 'remember-layout') {
+            if (this._store.enabled) {
+                this._save();
+            } else {
+                this._store.clear();
+                for (const monitors of this._trees.values())
+                    monitors.forEach(tree => this._dropPlaceholders(tree));
+            }
+        }
         else if (key === 'floating-apps')
             [...this._windows.keys()].sort(byCreation).forEach(window => this._place(window));
     }
@@ -403,11 +458,85 @@ export class Tiler {
             for (const [other, rect] of rects) {
                 if (other !== window && contains(rect, x, y)) {
                     tree.swap(window, other);
+                    this._save();
                     break;
                 }
             }
         }
         this._queueRelayout();
+    }
+
+    // Saving layouts.
+
+    // After a change the user made by hand: saves and moves the windows.
+    _changed(tree) {
+        this._dropPlaceholders(tree);
+        this._save();
+        this._queueRelayout();
+    }
+
+    // Layouts of monitors that are gone (unplugged) stay saved for when they
+    // come back.
+    _save() {
+        const connected = this._connectedMonitors();
+        this._store.save(this._savedTrees(), key => !connected.has(key.slice(key.indexOf(':') + 1)));
+    }
+
+    _connectedMonitors() {
+        const names = new Set();
+        for (let i = 0; i < global.display.get_n_monitors(); i++)
+            names.add(this._monitorName(i));
+        return names;
+    }
+
+    // Saved layouts name a monitor by its size, as monitor numbers change when
+    // one is plugged or unplugged; same-sized ones go by position.
+    _monitorName(index) {
+        const display = global.display;
+        const own = display.get_monitor_geometry(index);
+        const twins = [];
+        for (let i = 0; i < display.get_n_monitors(); i++) {
+            const other = display.get_monitor_geometry(i);
+            if (other.width === own.width && other.height === own.height)
+                twins.push(other);
+        }
+        twins.sort((a, b) => a.x - b.x || a.y - b.y);
+        const n = twins.findIndex(other => other.x === own.x && other.y === own.y);
+        return `${own.width}x${own.height}${n > 0 ? `#${n}` : ''}`;
+    }
+
+    // The slot this window had before a re-enable, else a slot of its app
+    // from an earlier login.
+    _placeholderFor(tree, window) {
+        const app = appId(window);
+        const seq = window.get_stable_sequence();
+        const slots = tree.ids.filter(id => id instanceof Placeholder && id.app === app);
+        return slots.find(slot => slot.seq === seq) ?? slots.find(slot => slot.seq === null);
+    }
+
+    // Once the user rearranges a tree by hand, its old layout is not wanted.
+    _dropPlaceholders(tree) {
+        for (const id of tree.ids) {
+            if (id instanceof Placeholder)
+                tree.remove(id);
+        }
+    }
+
+    // Saved layouts are keyed by workspace number and monitor name.
+    _savedKey(tree) {
+        const workspace = tree.workspace === ALL_WORKSPACES ? 'all' : tree.workspace.index();
+        return `${workspace}:${this._monitorName(tree.monitor)}`;
+    }
+
+    *_savedTrees() {
+        const count = global.display.get_n_monitors();
+        for (const monitors of this._trees.values()) {
+            for (const tree of monitors.values()) {
+                // A tree of a monitor that is gone (its windows moved away).
+                if (tree.monitor < count)
+                    yield [this._savedKey(tree), tree];
+            }
+        }
     }
 
     // Geometry.

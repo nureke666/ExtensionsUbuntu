@@ -1,6 +1,6 @@
 // Binds the tiling actions to keys and, while enabled, takes those keys away
 // from GNOME shortcuts that use them. The originals are kept in the
-// 'overridden-settings' key and restored on disable.
+// 'overridden-settings' key and restored on disable or when our keys change.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -62,9 +62,18 @@ export class Keybindings {
             Main.wm.addKeybinding(name, settings, Meta.KeyBindingFlags.NONE,
                 Shell.ActionMode.NORMAL, () => action(tiler));
         }
+        // Mutter rebinds our keys by itself; the GNOME keys they clash with
+        // are given back and taken again here.
+        settings.connectObject('changed', (_settings, key) => {
+            if (key in ACTIONS) {
+                this._restoreOverrides();
+                this._overrideConflicts();
+            }
+        }, this);
     }
 
     destroy() {
+        this._settings.disconnectObject(this);
         for (const name of Object.keys(ACTIONS))
             Main.wm.removeKeybinding(name);
         this._restoreOverrides();
