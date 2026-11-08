@@ -1,0 +1,8 @@
+{
+  "uuid": "dropdown-terminal@nurik.local",
+  "name": "Dropdown Terminal",
+  "description": "A terminal that drops down at the top of the screen on Super+Enter and hides on the next press.",
+  "shell-version": ["46"],
+  "settings-schema": "org.gnome.shell.extensions.dropdown-terminal",
+  "version": 1
+}

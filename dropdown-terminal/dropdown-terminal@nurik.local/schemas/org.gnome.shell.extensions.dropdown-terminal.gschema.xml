@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.dropdown-terminal"
+          path="/org/gnome/shell/extensions/dropdown-terminal/">
+
+    <key name="toggle" type="as">
+      <default><![CDATA[['<Super>Return']]]></default>
+      <summary>Show or hide the terminal</summary>
+    </key>
+
+    <key name="command" type="as">
+      <default>['gnome-terminal', '--app-id', 'org.nurik.DropdownTerminal']</default>
+      <summary>Command that opens the terminal window</summary>
+      <description>Its window must have the application id from 'app-id'.</description>
+    </key>
+    <key name="app-id" type="s">
+      <default>'org.nurik.DropdownTerminal'</default>
+      <summary>Application id (or WM_CLASS) of the terminal window</summary>
+    </key>
+
+    <key name="width" type="u">
+      <default>100</default>
+      <range min="10" max="100"/>
+      <summary>Width, percent of the work area</summary>
+    </key>
+    <key name="height" type="u">
+      <default>45</default>
+      <range min="10" max="100"/>
+      <summary>Height, percent of the work area</summary>
+    </key>
+
+    <key name="hide-on-unfocus" type="b">
+      <default>false</default>
+      <summary>Hide the terminal when another window gets the focus</summary>
+    </key>
+  </schema>
+</schemalist>
