@@ -97,6 +97,18 @@ export class Keybindings {
     // stays as the user set it.
     _overrideConflicts() {
         const saved = this._settings.get_value('overridden-settings').deepUnpack();
+        // Entries of older versions (original only) get what that version
+        // wrote now, while our keys are still the ones it used.
+        for (const [id, entry] of Object.entries(saved)) {
+            const {original, written} = unpackSaved(entry);
+            const slash = id.lastIndexOf('/');
+            const settings = lookupSettings(id.slice(0, slash));
+            if (written || !settings)
+                continue;
+            const wrote = this._writtenByOldVersion(id.slice(0, slash), id.slice(slash + 1), settings, original);
+            if (wrote)
+                saved[id] = new GLib.Variant('(vv)', [original, wrote]);
+        }
         const write = (schemaId, key, settings, value) => {
             const id = `${schemaId}/${key}`;
             // An original saved by an earlier run that never restored it (a

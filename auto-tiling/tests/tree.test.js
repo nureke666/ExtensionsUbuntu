@@ -178,6 +178,22 @@ test('when minimums do not fit, the first window keeps its own', () => {
     assert.equal(rects.get('B').width, 420);
 });
 
+test('no window gets less than a tenth of its split', () => {
+    const tree = build('A', 'B');
+    const mins = new Map([['B', {width: 1900, height: 0}]]);
+    const rects = tree.layout(AREA, NO_GAPS, () => false, id => mins.get(id));
+    assert.equal(rects.get('A').width, 192);
+    assert.equal(rects.get('B').width, 1728);
+});
+
+test('resize gives back a function that undoes it', () => {
+    const tree = build('A', 'B');
+    const undo = tree.resize('A', Direction.RIGHT, 0.2);
+    assert.equal(tree.layout(AREA, NO_GAPS).get('A').width, 1344);
+    undo();
+    assert.equal(tree.layout(AREA, NO_GAPS).get('A').width, 960);
+});
+
 test('normalizeAccelerator ignores modifier order and aliases', () => {
     assert.equal(normalizeAccelerator('<Super><Shift>Left'), normalizeAccelerator('<Shift><Super>left'));
     assert.equal(normalizeAccelerator('<Ctrl><Super>Up'), normalizeAccelerator('<Super><Control>Up'));

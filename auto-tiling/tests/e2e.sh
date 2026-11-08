@@ -261,6 +261,23 @@ open_window J wide
 check "a window wider than its slot gets room, nothing overlaps" \
     'at.r("J").width > at.r("I").width + 100 && at.inSlot("J") && at.inSlot("I") && at.r("I").x + at.r("I").width < at.r("J").x'
 
+# A maximized window teaches no minimum: with no outer gap it starts where its
+# slot does, and its maximized size must not stick to it.
+eval_js 'at.windows().forEach(w => w.delete(0)); at.settings().set_uint("gap-outer", 0); true' >/dev/null
+wait_for 'at.windows().length === 0' || echo "windows did not close"
+open_window X
+open_window Y
+eval_js 'at.win("X").maximize(3); true' >/dev/null
+wait_for 'at.win("X").get_maximized() === 3' || echo "X did not maximize"
+sleep 0.5
+eval_js 'at.win("X").unmaximize(3); true' >/dev/null
+wait_for 'at.inSlot("X")' || echo "X did not go back"
+eval_js 'at.activate("X")' >/dev/null
+open_window Z
+check "after a maximize the window still shares its slot" \
+    'at.inSlot("X") && at.inSlot("Z") && Math.abs(at.r("X").width - at.r("Z").width) <= 1'
+eval_js 'at.settings().reset("gap-outer"); true' >/dev/null
+
 # A window that cannot fill its slot, on another workspace, does not hold back
 # a swap here (it is not drawn there, so it would never answer).
 eval_js 'at.windows().forEach(w => w.delete(0)); true' >/dev/null
