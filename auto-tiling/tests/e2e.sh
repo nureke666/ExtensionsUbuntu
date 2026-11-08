@@ -27,8 +27,7 @@ EOF
         > "$ext/no-lock@test.local/metadata.json"
     echo 'export default class { enable() {} disable() {} }' > "$ext/no-lock@test.local/extension.js"
     # GTK windows block up to 25 s on xdg-desktop-portal, which cannot work on
-    # this bus (after the shell restart it would talk to the dead one); this
-    # stub fails at once instead.
+    # this bus; this stub fails at once instead.
     mkdir -p "$T/data/dbus-1/services"
     printf '[D-BUS Service]\nName=org.freedesktop.portal.Desktop\nExec=/bin/false\n' \
         > "$T/data/dbus-1/services/org.freedesktop.portal.Desktop.service"
@@ -44,9 +43,20 @@ EOF
     # Test windows skip the accessibility bus and gvfs: nothing runs them here.
     export NO_AT_BRIDGE=1 GIO_USE_VFS=local GIO_USE_VOLUME_MONITOR=unix
     mkdir -m 700 "$XDG_RUNTIME_DIR"
-    dbus-run-session -- "$0" inner 2>"$T/session.log"
+    # The second session is the next login: a new bus and shell, the same dconf.
+    dbus-run-session -- "$0" inner session 2>"$T/session.log"
+    first=$?
+    dbus-run-session -- "$0" inner next-login 2>>"$T/session.log"
+    second=$?
+    if grep -E "JS ERROR|auto-tiling" "$T/shell.log"; then
+        echo "FAIL errors in the shell log"
+        first=1
+    fi
+    [ $first -eq 0 ] && [ $second -eq 0 ] && echo "OK" || echo "FAIL"
+    [ $first -eq 0 ] && [ $second -eq 0 ]
     exit $?
 fi
+phase=$2
 
 eval_js() {
     gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell \
@@ -78,6 +88,7 @@ open_window() {
 # Ubuntu's session mode turns on Tiling Assistant, the dock and desktop icons:
 # the first two take the same keys and change the work area, and the desktop
 # icons read ~/Desktop and start gvfs.
+[ "$phase" = session ] &&
 gsettings set org.gnome.shell enabled-extensions "['$uuid', 'unsafe-mode@test.local', 'no-lock@test.local']"
 gsettings set org.gnome.shell disabled-extensions \
     "['tiling-assistant@ubuntu.com', 'ubuntu-dock@ubuntu.com', 'ding@rastersoft.com']"
@@ -103,7 +114,8 @@ globalThis.at = {
     ext: () => Main.extensionManager.lookup("auto-tiling@nurik.local"),
     tiler: () => at.ext().stateObj._tiler,
     settings: () => at.ext().stateObj._settings,
-    gnomeKeys: key => new imports.gi.Gio.Settings({schema_id: "org.gnome.desktop.wm.keybindings"}).get_strv(key),
+    wmKeys: () => new imports.gi.Gio.Settings({schema_id: "org.gnome.desktop.wm.keybindings"}),
+    gnomeKeys: key => at.wmKeys().get_strv(key),
     windows: () => global.display.list_all_windows().filter(w => w.get_window_type() === 0 && !w.is_skip_taskbar()),
     win: t => global.display.list_all_windows().find(w => w.title === t),
     r: t => at.win(t).get_frame_rect(),
@@ -136,10 +148,28 @@ true
 EOF
 )" >/dev/null
     wait_for 'at.ext()?.state === 1' || echo "auto-tiling did not start"
+    # The shell starts in the overview, where windows are not drawn and so
+    # never get their first frame. A hide() during the startup animation can
+    # leave all windows hidden, so it waits for the startup to end.
+    wait_for '!Main.layoutManager._startingUp' || echo "shell did not finish starting"
+    wait_for '(Main.overview.hide(), !Main.overview.visible && !Main.overview.animationInProgress && global.window_group.visible)' ||
+        echo "overview did not close"
 }
 start_shell
 
 SUPER=125 SHIFT=42 CTRL=29 ALT=56 LEFT=105 RIGHT=106 UP=103 EQUAL=13 R=19 F=33
+
+# The next login: the apps open in another order and take their old slots.
+if [ "$phase" = next-login ]; then
+    eval_js 'at.pointer(500, 500)' >/dev/null
+    for n in R Q P; do open_window $n; done
+    check "the layout comes back after the next login" "at.rects(['P', 'Q', 'R']) === '$(cat "$T/before")'"
+    open_window U
+    check "a new app still splits the focused window" 'at.inSlot("U") && at.inSlot("P")'
+    kill $(jobs -p) 2>/dev/null
+    wait 2>/dev/null
+    exit $failed
+fi
 
 eval_js 'at.pointer(500, 500)' >/dev/null
 for n in A B C; do open_window $n; done
@@ -201,6 +231,60 @@ check "and works without re-enabling" 'at.focus() === "D"'
 eval_js 'at.settings().reset("focus-left"); true' >/dev/null
 check "the old key goes back to GNOME" 'at.gnomeKeys("switch-to-workspace-left").includes("<Super><Alt>Left")'
 
+# A GNOME key the user sets while ours is taken from it stays as the user set
+# it: fullscreen on Super+F is taken, the user moves fullscreen to F11.
+restart_extension() {
+    eval_js 'Main.extensionManager.disableExtension("auto-tiling@nurik.local"); true' >/dev/null
+    wait_for 'at.ext().state !== 1' || echo "extension did not stop"
+    eval "${1:-true}"
+    eval_js 'Main.extensionManager.enableExtension("auto-tiling@nurik.local"); true' >/dev/null
+    wait_for 'at.ext().state === 1' || echo "extension did not start"
+}
+restart_extension "eval_js 'at.wmKeys().set_strv(\"toggle-fullscreen\", [\"<Super>f\"]); true' >/dev/null"
+check "Super+F is taken from GNOME's fullscreen" 'at.gnomeKeys("toggle-fullscreen").length === 0'
+eval_js 'at.wmKeys().set_strv("toggle-fullscreen", ["F11"]); true' >/dev/null
+eval_js 'Main.extensionManager.disableExtension("auto-tiling@nurik.local"); true' >/dev/null
+wait_for 'at.ext().state !== 1' || echo "extension did not stop"
+check "fullscreen set to F11 meanwhile stays F11 when disabled, other keys come back" \
+    'at.gnomeKeys("toggle-fullscreen").join() === "F11" && at.gnomeKeys("move-to-monitor-left").includes("<Super><Shift>Left")'
+eval_js 'Main.extensionManager.enableExtension("auto-tiling@nurik.local"); true' >/dev/null
+wait_for 'at.ext().state === 1' || echo "extension did not start"
+check "and when enabled again" 'at.gnomeKeys("toggle-fullscreen").join() === "F11"'
+
+# A window that cannot be as narrow as its slot (Chrome: 500 px) gets room
+# from its neighbour instead of overlapping it.
+eval_js 'at.windows().forEach(w => w.delete(0)); true' >/dev/null
+wait_for 'at.windows().length === 0' || echo "windows did not close"
+eval_js 'at.pointer(500, 500)' >/dev/null
+for n in G H I; do open_window $n; done
+open_window J wide
+check "a window wider than its slot gets room, nothing overlaps" \
+    'at.r("J").width > at.r("I").width + 100 && at.inSlot("J") && at.inSlot("I") && at.r("I").x + at.r("I").width < at.r("J").x'
+
+# A window that cannot fill its slot, on another workspace, does not hold back
+# a swap here (it is not drawn there, so it would never answer).
+eval_js 'at.windows().forEach(w => w.delete(0)); true' >/dev/null
+wait_for 'at.windows().length === 0' || echo "windows did not close"
+open_window L
+open_window M small
+eval_js 'global.workspace_manager.get_workspace_by_index(1).activate(global.get_current_time()); true' >/dev/null
+wait_for 'global.workspace_manager.get_active_workspace_index() === 1' || echo "workspace did not switch"
+open_window N
+open_window O
+wait_for 'at.inSlot("N") && at.inSlot("O") && at.r("N").x < at.r("O").x' || echo "N and O not tiled"
+eval_js "at.activate('N') && at.key($SUPER, $SHIFT, $RIGHT)" >/dev/null
+sleep 0.3
+if eval_js 'at.inSlot("N") && at.inSlot("O") && at.r("N").x > at.r("O").x' | grep -qF "(true, 'true')"; then
+    echo "ok   a swap is not held back by a window on another workspace"
+else
+    echo "FAIL a swap is not held back by a window on another workspace"
+    eval_js "at.dump()"
+    failed=1
+fi
+eval_js 'at.windows().forEach(w => w.delete(0)); global.workspace_manager.get_workspace_by_index(0).activate(global.get_current_time()); true' >/dev/null
+wait_for 'at.windows().length === 0 && global.workspace_manager.get_active_workspace_index() === 0' ||
+    echo "did not go back to workspace 1"
+
 # Screen lock: GNOME disables and re-enables every extension enabled after one
 # that stops on the lock screen. Re-enabling auto-tiling here puts it last.
 eval_js 'Main.extensionManager.disableExtension("auto-tiling@nurik.local"); true' >/dev/null
@@ -238,28 +322,14 @@ wait_for 'Main.sessionMode.currentMode !== "unlock-dialog"' || echo "the screen 
 check "the lock re-enabled auto-tiling" 'at.ext().state === 1 && at.tiler() !== oldTiler'
 check "and nothing moved, S still floats" 'at.floating("S") && at.layout() === before'
 
-# Logout and login: every window closes, GNOME Shell starts again and the
-# apps open in another order. Closed windows are not saved, so T1, T2 keep
-# empty slots that give their space away.
+# Logout: every window closes (the next login is the second session). Closed
+# windows are not saved, so T1, T2 keep empty slots that give their space away.
 eval_js 'at.win("T1").delete(0); at.win("T2").delete(0); at.win("S").delete(0); true' >/dev/null
 wait_for 'at.windows().length === 3 && ["P", "Q", "R"].every(at.inSlot)' || echo "windows did not close"
-before=$(eval_js 'at.rects(["P", "Q", "R"])' | sed -E "s/^\(true, '\"(.*)\"'\)$/\1/")
+eval_js 'at.rects(["P", "Q", "R"])' | sed -E "s/^\(true, '\"(.*)\"'\)$/\1/" > "$T/before"
 eval_js 'at.windows().forEach(w => w.delete(0)); true' >/dev/null
 wait_for 'at.windows().length === 0' || echo "windows did not close"
-kill $shell
-wait $shell 2>/dev/null
-start_shell
-eval_js 'at.pointer(500, 500)' >/dev/null
-for n in R Q P; do open_window $n; done
-check "the layout comes back after the next login" "at.rects(['P', 'Q', 'R']) === '$before'"
-open_window U
-check "a new app still splits the focused window" 'at.inSlot("U") && at.inSlot("P")'
 
 kill $(jobs -p) 2>/dev/null
 wait 2>/dev/null
-if grep -E "JS ERROR|auto-tiling" "$T/shell.log"; then
-    echo "FAIL errors in the shell log"
-    failed=1
-fi
-[ $failed -eq 0 ] && echo "OK" || echo "FAIL"
 exit $failed

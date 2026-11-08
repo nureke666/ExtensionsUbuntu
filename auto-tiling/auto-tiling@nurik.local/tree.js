@@ -197,8 +197,10 @@ export class Tree {
 
     // Returns Map(id -> {x, y, width, height}) with integer geometry. Hidden
     // windows give their space to the rest; gaps.outer pads the area and
-    // gaps.inner separates neighbours.
-    layout(area, gaps, isHidden = () => false) {
+    // gaps.inner separates neighbours. `minSize(id)` ({width, height} or
+    // nothing) moves a split so that a window gets at least that much when
+    // the space allows.
+    layout(area, gaps, isHidden = () => false, minSize = () => null) {
         const rects = new Map();
         const visible = new Map();
         const countVisible = node => {
@@ -212,6 +214,27 @@ export class Tree {
         };
         if (!countVisible(this.root))
             return rects;
+
+        // Smallest size each visible subtree can take.
+        const minimum = new Map();
+        const measure = node => {
+            let result;
+            if (isLeaf(node)) {
+                const size = minSize(node.id);
+                result = {width: size?.width ?? 0, height: size?.height ?? 0};
+            } else {
+                const [a, b] = node.children.filter(child => visible.get(child)).map(measure);
+                if (!b)
+                    result = a;
+                else if (node.orientation === Orientation.HORIZONTAL)
+                    result = {width: a.width + gaps.inner + b.width, height: Math.max(a.height, b.height)};
+                else
+                    result = {width: Math.max(a.width, b.width), height: a.height + gaps.inner + b.height};
+            }
+            minimum.set(node, result);
+            return result;
+        };
+        measure(this.root);
 
         const place = (node, rect) => {
             if (isLeaf(node)) {
@@ -231,7 +254,12 @@ export class Tree {
             const horizontal = node.orientation === Orientation.HORIZONTAL;
             const total = horizontal ? rect.width : rect.height;
             const available = Math.max(0, total - gaps.inner);
-            const firstSize = Math.round(available * node.ratio);
+            const along = horizontal ? 'width' : 'height';
+            const firstMin = minimum.get(first)[along];
+            const secondMin = minimum.get(second)[along];
+            // The first child keeps its minimum when both do not fit.
+            const firstSize = Math.max(Math.min(firstMin, available),
+                Math.min(Math.round(available * node.ratio), available - secondMin));
             const secondSize = available - firstSize;
             if (horizontal) {
                 place(first, {...rect, width: firstSize});

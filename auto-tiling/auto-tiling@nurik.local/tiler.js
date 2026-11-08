@@ -41,6 +41,9 @@ const MONITOR_DIRECTIONS = {
 const floatingSeqs = new Set();
 // Workspaces (or ALL_WORKSPACES) where the user turned tiling off:
 const disabledKeys = new Set();
+// Stable sequence -> smallest size the window turned out to accept (see
+// _learnMinSize); a re-enable would not see it again, the size does not change.
+const minSizes = new Map();
 
 function contains(rect, x, y) {
     return x >= rect.x && x < rect.x + rect.width &&
@@ -74,7 +77,7 @@ export class Tiler {
         this._lastFocused = null;
         this._grabbedWindow = null;
         this._relayoutId = 0;
-        // The slot each tiled window should have (see _onSizeChanged).
+        // The slot each tiled window should have (see _onFrameChanged).
         this._requested = new Map();
         // The focused window's move held back until covered windows have moved.
         this._settle = null;
@@ -279,7 +282,8 @@ export class Tiler {
             'unmanaged', () => this._untrack(window),
             'workspace-changed', () => this._place(window),
             'notify::minimized', () => this._queueRelayout(),
-            'size-changed', () => this._onSizeChanged(window),
+            'size-changed', () => this._onFrameChanged(window),
+            'position-changed', () => this._onFrameChanged(window),
             'notify::resizeable', () => this._place(window),
             'notify::above', () => this._place(window),
             'notify::fullscreen', () => {
@@ -295,10 +299,43 @@ export class Tiler {
     // Mutter ignores a move to the rect a window still has while an earlier
     // move is not drawn yet, so once the client draws a size other than the
     // last one asked for, the slot is asked for again.
-    _onSizeChanged(window) {
+    _onFrameChanged(window) {
         const requested = this._requested.get(window);
-        if (requested && this._windows.get(window) && !sameRect(window.get_frame_rect(), requested))
+        const tree = this._windows.get(window);
+        if (!requested || !tree || window === this._grabbedWindow)
+            return;
+        const frame = window.get_frame_rect();
+        if (this._learnMinSize(window, tree, frame, requested) || !sameRect(frame, requested))
             this._queueRelayout();
+    }
+
+    // Some clients cannot be as small as their slot (Chrome is at least 500 px
+    // wide) and would overlap a neighbour. A window that took the position
+    // asked for but kept a bigger size gets that size as its minimum, and the
+    // layout makes room for it. A window that later turns out smaller lowers
+    // its minimum; half the work area caps it, in case the size answered an
+    // older request. Returns whether the minimum changed.
+    _learnMinSize(window, tree, frame, requested) {
+        const seq = window.get_stable_sequence();
+        const old = minSizes.get(seq) ?? {width: 0, height: 0};
+        const area = this._workArea(tree);
+        const moved = frame.x === requested.x && frame.y === requested.y;
+        const learn = (size, asked, known, limit) => {
+            let min = known;
+            if (moved && size > asked)
+                min = size;
+            else if (known && size < known)
+                min = size;
+            return Math.min(min, Math.floor(limit / 2));
+        };
+        const min = {
+            width: learn(frame.width, requested.width, old.width, area.width),
+            height: learn(frame.height, requested.height, old.height, area.height),
+        };
+        if (min.width === old.width && min.height === old.height)
+            return false;
+        minSizes.set(seq, min);
+        return true;
     }
 
     _untrack(window) {
@@ -306,6 +343,7 @@ export class Tiler {
         window.disconnectObject(this);
         this._windows.delete(window);
         this._requested.delete(window);
+        minSizes.delete(window.get_stable_sequence());
         floatingSeqs.delete(window.get_stable_sequence());
         if (this._lastFocused === window)
             this._lastFocused = null;
@@ -569,7 +607,8 @@ export class Tiler {
     }
 
     _layout(tree) {
-        return tree.layout(this._workArea(tree), this._gaps(), this._isHidden);
+        return tree.layout(this._workArea(tree), this._gaps(), this._isHidden,
+            id => id instanceof Placeholder ? null : minSizes.get(id.get_stable_sequence()));
     }
 
     _queueRelayout() {
@@ -602,12 +641,17 @@ export class Tiler {
 
         const focused = global.display.focus_window;
         const focusedRect = moves.find(([window]) => window === focused)?.[1];
+        const workspace = global.workspace_manager.get_active_workspace();
         // Geometry of the windows the focused one would cover, taken before
-        // they move (a pure move can apply at once).
+        // they move (a pure move can apply at once). Only windows that get a
+        // new slot now and are drawn: one on another workspace, or one that
+        // cannot fill its slot (a terminal sized in whole cells), would only
+        // hold the focused window back until the timeout.
         const covered = new Map();
-        for (const [window] of moves) {
+        for (const [window, , newSlot] of moves) {
             const frame = window.get_frame_rect();
-            if (focusedRect && window !== focused && containsRect(focusedRect, frame))
+            if (focusedRect && window !== focused && newSlot &&
+                window.located_on_workspace(workspace) && containsRect(focusedRect, frame))
                 covered.set(window, frame);
         }
         for (const [window, rect] of moves) {
@@ -618,7 +662,8 @@ export class Tiler {
             this._moveAfter(focused, focusedRect, covered);
     }
 
-    // Windows of `rects` that are not in their slot yet, as [window, rect].
+    // Windows of `rects` that are not in their slot yet, as [window, rect,
+    // whether the slot is new since the last pass].
     _pendingMoves(rects) {
         const moves = [];
         for (const [window, rect] of rects) {
@@ -628,10 +673,11 @@ export class Tiler {
                 window.get_maximized() === Meta.MaximizeFlags.BOTH)
                 continue;
             // The slot the window should have now, also when it seems to have
-            // it already (see _onSizeChanged).
+            // it already (see _onFrameChanged).
+            const previous = this._requested.get(window);
             this._requested.set(window, rect);
             if (!sameRect(window.get_frame_rect(), rect))
-                moves.push([window, rect]);
+                moves.push([window, rect, !previous || !sameRect(previous, rect)]);
         }
         return moves;
     }

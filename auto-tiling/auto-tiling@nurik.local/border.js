@@ -94,8 +94,9 @@ export class FocusBorder {
         this._actor.show();
     }
 
+    // Not around helper windows that stay out of the window list (a drop-down terminal).
     _shouldShow(window) {
-        return BORDERED_TYPES.includes(window.get_window_type()) &&
+        return BORDERED_TYPES.includes(window.get_window_type()) && !window.is_skip_taskbar() &&
             !window.minimized && !window.fullscreen &&
             window.get_maximized() !== Meta.MaximizeFlags.BOTH &&
             window.located_on_workspace(global.workspace_manager.get_active_workspace());

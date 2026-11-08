@@ -147,6 +147,37 @@ test('replace puts a window into a slot', () => {
     assert.deepEqual(tree.ids, ['A', 'D', 'C']);
 });
 
+test('a minimum size moves the split and squeezes the neighbour', () => {
+    const tree = build('A', 'B', 'C', 'D');
+    const mins = new Map([['C', {width: 600, height: 0}]]);
+    const plain = tree.layout(AREA, NO_GAPS);
+    assert.equal(plain.get('C').width, 480);
+    const rects = tree.layout(AREA, NO_GAPS, () => false, id => mins.get(id));
+    assert.equal(rects.get('C').width, 600);
+    assert.equal(rects.get('D').width, 360);
+    assert.equal(rects.get('D').x, rects.get('C').x + 600);
+    // The column of C and D keeps its width: only their split moved.
+    assert.equal(rects.get('A').width, 960);
+});
+
+test('minimums of a subtree add up along the split', () => {
+    const tree = build('A', 'B', 'C');
+    // B and C are stacked on the right; the wider one sets the column's minimum.
+    const mins = new Map([['B', {width: 1200, height: 0}], ['C', {width: 300, height: 0}]]);
+    const rects = tree.layout(AREA, NO_GAPS, () => false, id => mins.get(id));
+    assert.equal(rects.get('B').width, 1200);
+    assert.equal(rects.get('C').width, 1200);
+    assert.equal(rects.get('A').width, 720);
+});
+
+test('when minimums do not fit, the first window keeps its own', () => {
+    const tree = build('A', 'B');
+    const mins = new Map([['A', {width: 1500, height: 0}], ['B', {width: 1500, height: 0}]]);
+    const rects = tree.layout(AREA, NO_GAPS, () => false, id => mins.get(id));
+    assert.equal(rects.get('A').width, 1500);
+    assert.equal(rects.get('B').width, 420);
+});
+
 test('normalizeAccelerator ignores modifier order and aliases', () => {
     assert.equal(normalizeAccelerator('<Super><Shift>Left'), normalizeAccelerator('<Shift><Super>left'));
     assert.equal(normalizeAccelerator('<Ctrl><Super>Up'), normalizeAccelerator('<Super><Control>Up'));

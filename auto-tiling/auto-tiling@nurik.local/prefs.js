@@ -41,7 +41,7 @@ export default class AutoTilingPreferences extends ExtensionPreferences {
         window._settings = settings;
         window.set_default_size(640, 760);
         window.add(windowsPage(settings));
-        window.add(appsPage(settings));
+        window.add(appsPage(settings, window));
         window.add(keysPage(settings, window));
     }
 }
@@ -108,18 +108,16 @@ function colorButton(settings, key) {
     return button;
 }
 
-function appsPage(settings) {
+function appsPage(settings, window) {
     const page = new Adw.PreferencesPage({title: 'Плавающие', icon_name: 'focus-windows-symbolic'});
     const group = new Adw.PreferencesGroup({
-        title: 'Приложения, которые не тайлятся',
-        description: 'Их окна всегда плавают. Нужен id приложения: имя .desktop-файла без .desktop ' +
-            'или WM_CLASS (видно в Looking Glass: Alt+F2, lg, вкладка Windows).',
+        title: 'Плавающие приложения',
+        description: 'Окна этих приложений не встают в раскладку, а открываются поверх ' +
+            'остальных, как без тайлинга. Диалоги, окна «поверх всех» и окна, которые ' +
+            'нельзя растянуть, плавают и без этого списка.',
     });
     page.add(group);
 
-    const apps = Gio.AppInfo.get_all()
-        .filter(app => app.should_show() && app.get_id())
-        .sort((a, b) => a.get_display_name().localeCompare(b.get_display_name()));
     const add = id => {
         id = id.trim().replace(/\.desktop$/, '');
         const list = settings.get_strv('floating-apps');
@@ -127,47 +125,30 @@ function appsPage(settings) {
             settings.set_strv('floating-apps', [...list, id]);
     };
 
-    const picker = new Adw.ComboRow({
-        title: 'Добавить из установленных',
-        model: Gtk.StringList.new(apps.map(app => app.get_display_name())),
-        enable_search: true,
-    });
-    const addPicked = new Gtk.Button({
-        icon_name: 'list-add-symbolic',
-        valign: Gtk.Align.CENTER,
-        tooltip_text: 'Добавить',
-        css_classes: ['flat'],
-    });
-    addPicked.connect('clicked', () => {
-        const app = apps[picker.selected];
-        if (app)
-            add(app.get_id());
-    });
-    picker.add_suffix(addPicked);
-    group.add(picker);
-
-    const entry = new Adw.EntryRow({title: 'Добавить по id', show_apply_button: true});
-    entry.connect('apply', () => {
-        add(entry.text);
-        entry.text = '';
-    });
-    group.add(entry);
+    const pick = new Adw.ActionRow({title: 'Добавить приложение…', activatable: true});
+    pick.add_prefix(new Gtk.Image({icon_name: 'list-add-symbolic'}));
+    pick.connect('activated', () => pickApp(window, app => add(app.get_id())));
+    group.add(pick);
 
     let rows = [];
     const fill = () => {
         rows.forEach(row => group.remove(row));
-        rows = settings.get_strv('floating-apps').map(id => {
+        const ids = settings.get_strv('floating-apps');
+        rows = ids.map(id => {
             const info = Gio.DesktopAppInfo.new(`${id}.desktop`);
+            // App names are plain text ("Software & Updates"), not markup.
             const row = new Adw.ActionRow({
                 title: info?.get_display_name() ?? id,
-                subtitle: info ? id : '',
+                subtitle: info ? '' : 'сравнивается с WM_CLASS и id приложения',
+                use_markup: false,
             });
-            if (info?.get_icon())
-                row.add_prefix(new Gtk.Image({gicon: info.get_icon(), pixel_size: 32}));
+            row.add_prefix(info?.get_icon()
+                ? new Gtk.Image({gicon: info.get_icon(), pixel_size: 32})
+                : new Gtk.Image({icon_name: 'application-x-executable-symbolic', pixel_size: 32}));
             const remove = new Gtk.Button({
                 icon_name: 'user-trash-symbolic',
                 valign: Gtk.Align.CENTER,
-                tooltip_text: 'Убрать',
+                tooltip_text: 'Убрать из списка',
                 css_classes: ['flat'],
             });
             remove.connect('clicked', () =>
@@ -176,10 +157,67 @@ function appsPage(settings) {
             group.add(row);
             return row;
         });
+        if (!ids.length) {
+            const empty = new Adw.ActionRow({title: 'Список пуст: все приложения тайлятся'});
+            empty.add_css_class('dim-label');
+            group.add(empty);
+            rows.push(empty);
+        }
     };
     fill();
     settings.connect('changed::floating-apps', fill);
+
+    const advanced = new Adw.PreferencesGroup({
+        title: 'Своё приложение по id',
+        description: 'Если приложения нет в списке установленных: его WM_CLASS или id. ' +
+            'Их видно в Looking Glass (Alt+F2, lg, вкладка Windows).',
+    });
+    const entry = new Adw.EntryRow({title: 'id или WM_CLASS', show_apply_button: true});
+    entry.connect('apply', () => {
+        add(entry.text);
+        entry.text = '';
+    });
+    advanced.add(entry);
+    page.add(advanced);
     return page;
+}
+
+// A searchable list of installed apps; `done(appInfo)` gets the chosen one.
+function pickApp(parent, done) {
+    const apps = Gio.AppInfo.get_all()
+        .filter(app => app.should_show() && app.get_id())
+        .sort((a, b) => a.get_display_name().localeCompare(b.get_display_name()));
+    const search = new Gtk.SearchEntry({placeholder_text: 'Найти приложение', margin_bottom: 6});
+    const list = new Gtk.ListBox({selection_mode: Gtk.SelectionMode.NONE, css_classes: ['boxed-list']});
+    for (const app of apps) {
+        const row = new Adw.ActionRow({title: app.get_display_name(), activatable: true, use_markup: false});
+        row.add_prefix(new Gtk.Image({gicon: app.get_icon() ?? null, pixel_size: 32}));
+        row._app = app;
+        list.append(row);
+    }
+    list.set_filter_func(row => row._app.get_display_name().toLowerCase()
+        .includes(search.text.trim().toLowerCase()));
+    search.connect('search-changed', () => list.invalidate_filter());
+
+    const box = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL, margin_top: 12,
+        margin_bottom: 12, margin_start: 12, margin_end: 12});
+    box.append(search);
+    box.append(new Gtk.ScrolledWindow({child: list, vexpand: true}));
+    const view = new Adw.ToolbarView({content: box});
+    view.add_top_bar(new Adw.HeaderBar({title_widget: new Adw.WindowTitle({title: 'Добавить приложение'})}));
+    const dialog = new Adw.Window({
+        modal: true,
+        transient_for: parent,
+        default_width: 420,
+        default_height: 560,
+        content: view,
+    });
+    list.connect('row-activated', (_list, row) => {
+        done(row._app);
+        dialog.close();
+    });
+    dialog.present();
+    search.grab_focus();
 }
 
 function keysPage(settings, window) {
