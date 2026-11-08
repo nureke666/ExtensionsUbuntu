@@ -1,5 +1,9 @@
 // Tracks windows, keeps one BSP tree per workspace and monitor, and moves
 // windows into the slots the trees compute.
+//
+// With workspaces on the primary monitor only (the GNOME default), windows on
+// the other monitors are on every workspace, so each of those monitors has one
+// tree under ALL_WORKSPACES instead of one per workspace.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -20,6 +24,14 @@ const MOVE_GRAB_OPS = [
 ];
 // Longest time the focused window waits for windows it would cover (see _relayout).
 const SETTLE_TIMEOUT_MS = 500;
+// Tree key for the windows of a monitor that does not switch workspaces.
+const ALL_WORKSPACES = 'all-workspaces';
+const MONITOR_DIRECTIONS = {
+    left: Meta.DisplayDirection.LEFT,
+    right: Meta.DisplayDirection.RIGHT,
+    up: Meta.DisplayDirection.UP,
+    down: Meta.DisplayDirection.DOWN,
+};
 
 function contains(rect, x, y) {
     return x >= rect.x && x < rect.x + rect.width &&
@@ -43,7 +55,7 @@ function byCreation(a, b) {
 export class Tiler {
     constructor(settings) {
         this._settings = settings;
-        // Meta.Workspace -> Map(monitor index -> Tree)
+        // Meta.Workspace or ALL_WORKSPACES -> Map(monitor index -> Tree)
         this._trees = new Map();
         // Tracked window -> the Tree it is tiled in, or null while it floats.
         this._windows = new Map();
@@ -118,22 +130,31 @@ export class Tiler {
         target?.activate(global.get_current_time());
     }
 
+    // Swaps with the neighbour; at the edge of the monitor, and for a window
+    // that is not tiled, moves the window to the next monitor, as GNOME's
+    // Super+Shift+arrows did before we took them.
     swap(direction) {
-        const window = this._focusedTiled();
+        const window = global.display.focus_window;
         if (!window)
             return;
 
         const tree = this._windows.get(window);
-        const rects = this._layout(tree, window.get_workspace(), window.get_monitor());
+        const rects = tree ? this._layout(tree) : new Map();
         const from = rects.get(window);
-        if (!from)
-            return;
         rects.delete(window);
-        const target = findNeighbor(from, rects, direction);
+        const target = from && findNeighbor(from, rects, direction);
         if (target) {
             tree.swap(window, target);
             this._queueRelayout();
+            return;
         }
+        // Not the desktop icons and other helper windows.
+        if (!tree && window.is_skip_taskbar())
+            return;
+        const monitor = global.display.get_monitor_neighbor_index(
+            tree?.monitor ?? window.get_monitor(), MONITOR_DIRECTIONS[direction]);
+        if (monitor >= 0)
+            this._moveToMonitor(window, monitor);
     }
 
     resize(direction) {
@@ -153,8 +174,7 @@ export class Tiler {
     }
 
     equalize() {
-        const workspace = global.workspace_manager.get_active_workspace();
-        this._trees.get(workspace)?.forEach(tree => tree.equalize());
+        this._trees.get(this._currentKey())?.forEach(tree => tree.equalize());
         this._queueRelayout();
     }
 
@@ -175,15 +195,15 @@ export class Tiler {
     }
 
     toggleTiling() {
-        const workspace = global.workspace_manager.get_active_workspace();
-        const enable = this._disabledWorkspaces.has(workspace);
+        const key = this._currentKey();
+        const enable = this._disabledWorkspaces.has(key);
         if (enable)
-            this._disabledWorkspaces.delete(workspace);
+            this._disabledWorkspaces.delete(key);
         else
-            this._disabledWorkspaces.add(workspace);
+            this._disabledWorkspaces.add(key);
 
         [...this._windows.keys()]
-            .filter(window => window.get_workspace() === workspace)
+            .filter(window => this._workspaceKey(window) === key)
             .sort(byCreation)
             .forEach(window => this._place(window));
 
@@ -207,6 +227,11 @@ export class Tiler {
                 this._pendingActors.delete(actor);
                 actor.disconnectObject(this);
                 this._track(window);
+                // Apps that remember being maximized (browsers, editors) and
+                // big windows GNOME maximizes itself open over everything;
+                // a new window takes its slot instead.
+                if (this._windows.get(window) && window.get_maximized() === Meta.MaximizeFlags.BOTH)
+                    window.unmaximize(Meta.MaximizeFlags.BOTH);
             },
             'destroy', () => this._pendingActors.delete(actor),
             this);
@@ -221,7 +246,11 @@ export class Tiler {
             'unmanaged', () => this._untrack(window),
             'workspace-changed', () => this._place(window),
             'notify::minimized', () => this._queueRelayout(),
-            'notify::fullscreen', () => this._queueRelayout(),
+            'notify::resizeable', () => this._place(window),
+            'notify::fullscreen', () => {
+                this._place(window);
+                this._queueRelayout();
+            },
             'notify::maximized-horizontally', () => this._queueRelayout(),
             'notify::maximized-vertically', () => this._queueRelayout(),
             this);
@@ -246,9 +275,8 @@ export class Tiler {
         if (!this._windows.has(window))
             return;
 
-        const workspace = window.get_workspace();
-        const monitor = window.get_monitor();
-        const tree = this._shouldTile(window) ? this._treeFor(workspace, monitor) : null;
+        const tree = this._shouldTile(window)
+            ? this._treeFor(this._workspaceKey(window), window.get_monitor()) : null;
         const current = this._windows.get(window);
         if (current === tree)
             return;
@@ -257,7 +285,7 @@ export class Tiler {
         if (tree) {
             const target = this._lastFocused !== window &&
                 this._windows.get(this._lastFocused) === tree ? this._lastFocused : null;
-            tree.insert(window, target, this._workArea(workspace, monitor), this._isHidden);
+            tree.insert(window, target, this._workArea(tree), this._isHidden);
         }
         this._windows.set(window, tree);
         if (tree && global.display.focus_window === window)
@@ -265,15 +293,33 @@ export class Tiler {
         this._queueRelayout();
     }
 
+    // The tree key for the window: its workspace, ALL_WORKSPACES on a monitor
+    // that does not switch workspaces, or null for a window the user pinned
+    // to all workspaces (it floats).
+    _workspaceKey(window) {
+        if (!window.is_on_all_workspaces())
+            return window.get_workspace();
+        return Meta.prefs_get_workspaces_only_on_primary() && !window.is_on_primary_monitor()
+            ? ALL_WORKSPACES : null;
+    }
+
+    // Where Super+= and Super+T act: the workspace of the focused window, or
+    // ALL_WORKSPACES when it is on a monitor that does not switch workspaces.
+    _currentKey() {
+        const focused = global.display.focus_window;
+        return (focused && this._windows.has(focused) && this._workspaceKey(focused)) ||
+            global.workspace_manager.get_active_workspace();
+    }
+
     _shouldTile(window) {
-        const workspace = window.get_workspace();
-        if (!workspace || this._disabledWorkspaces.has(workspace) || window.get_monitor() < 0)
+        const key = this._workspaceKey(window);
+        if (!key || this._disabledWorkspaces.has(key) || window.get_monitor() < 0)
             return false;
         if (window.get_window_type() !== Meta.WindowType.NORMAL)
             return false;
         if (window.get_transient_for() || window.is_attached_dialog())
             return false;
-        if (window.is_skip_taskbar() || window.is_on_all_workspaces() || !window.allows_resize())
+        if (window.is_skip_taskbar() || !this._isResizable(window))
             return false;
         if (this._floating.has(window))
             return false;
@@ -283,15 +329,22 @@ export class Tiler {
         return !ids.some(id => id && floatingApps.includes(id));
     }
 
-    _treeFor(workspace, monitor) {
-        let monitors = this._trees.get(workspace);
+    // allows_resize() is false for any maximized window, and a fullscreen one
+    // reports no features at all, so it keeps whatever it is now.
+    _isResizable(window) {
+        return window.fullscreen ? Boolean(this._windows.get(window)) : window.resizeable;
+    }
+
+    _treeFor(key, monitor) {
+        let monitors = this._trees.get(key);
         if (!monitors) {
             monitors = new Map();
-            this._trees.set(workspace, monitors);
+            this._trees.set(key, monitors);
         }
         let tree = monitors.get(monitor);
         if (!tree) {
-            tree = new Tree();
+            // Remembers where it lives, for its work area.
+            tree = Object.assign(new Tree(), {workspace: key, monitor});
             monitors.set(monitor, tree);
         }
         return tree;
@@ -299,7 +352,7 @@ export class Tiler {
 
     _pruneWorkspaces() {
         const manager = global.workspace_manager;
-        const alive = new Set();
+        const alive = new Set([ALL_WORKSPACES]);
         for (let i = 0; i < manager.get_n_workspaces(); i++)
             alive.add(manager.get_workspace_by_index(i));
         for (const workspace of [...this._trees.keys()]) {
@@ -346,7 +399,7 @@ export class Tiler {
         const tree = this._windows.get(window);
         if (tree && MOVE_GRAB_OPS.includes(op)) {
             const [x, y] = global.get_pointer();
-            const rects = this._layout(tree, window.get_workspace(), window.get_monitor());
+            const rects = this._layout(tree);
             for (const [other, rect] of rects) {
                 if (other !== window && contains(rect, x, y)) {
                     tree.swap(window, other);
@@ -366,12 +419,14 @@ export class Tiler {
         };
     }
 
-    _workArea(workspace, monitor) {
-        return workspace.get_work_area_for_monitor(monitor);
+    _workArea(tree) {
+        const workspace = tree.workspace === ALL_WORKSPACES
+            ? global.workspace_manager.get_active_workspace() : tree.workspace;
+        return workspace.get_work_area_for_monitor(tree.monitor);
     }
 
-    _layout(tree, workspace, monitor) {
-        return tree.layout(this._workArea(workspace, monitor), this._gaps(), this._isHidden);
+    _layout(tree) {
+        return tree.layout(this._workArea(tree), this._gaps(), this._isHidden);
     }
 
     _queueRelayout() {
@@ -395,10 +450,10 @@ export class Tiler {
         this._cancelSettle();
 
         const moves = [];
-        for (const [workspace, monitors] of this._trees) {
-            for (const [monitor, tree] of monitors) {
+        for (const monitors of this._trees.values()) {
+            for (const tree of monitors.values()) {
                 if (!tree.isEmpty)
-                    moves.push(...this._pendingMoves(this._layout(tree, workspace, monitor)));
+                    moves.push(...this._pendingMoves(this._layout(tree)));
             }
         }
 
@@ -447,9 +502,10 @@ export class Tiler {
     // drew at the new size, or after SETTLE_TIMEOUT_MS.
     _moveAfter(window, rect, before) {
         const others = [...before.keys()];
+        const tree = this._windows.get(window);
         const finish = () => {
             this._cancelSettle();
-            if (this._windows.get(window))
+            if (this._windows.get(window) === tree)
                 this._move(window, rect);
         };
         const check = () => {
@@ -481,8 +537,29 @@ export class Tiler {
         this._settle = null;
     }
 
+    // A tiled window is put inside the monitor's work area; it then enters
+    // that monitor and _place() tiles it there. move_to_monitor() leaves a
+    // window that is taller than the new work area where it was, but it keeps
+    // floating, maximized and fullscreen windows as they are.
+    _moveToMonitor(window, monitor) {
+        if (!this._windows.get(window) || window.get_maximized() || window.fullscreen) {
+            window.move_to_monitor(monitor);
+            return;
+        }
+        // A held-back move to the old slot would pull the window back.
+        this._cancelSettle();
+        const area = window.get_work_area_for_monitor(monitor);
+        const frame = window.get_frame_rect();
+        const width = Math.min(frame.width, area.width);
+        const height = Math.min(frame.height, area.height);
+        window.move_resize_frame(false,
+            area.x + Math.round((area.width - width) / 2),
+            area.y + Math.round((area.height - height) / 2),
+            width, height);
+    }
+
     _centerFloating(window) {
-        const area = this._workArea(window.get_workspace(), window.get_monitor());
+        const area = window.get_work_area_current_monitor();
         const width = Math.round(area.width * FLOATING_WIDTH);
         const height = Math.round(area.height * FLOATING_HEIGHT);
         window.move_resize_frame(false,
