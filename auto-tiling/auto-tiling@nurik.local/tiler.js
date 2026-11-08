@@ -697,10 +697,11 @@ export class Tiler {
             // The slot the window should have now, also when it seems to have
             // it already (see _onFrameChanged).
             this._requested.set(window, rect);
-            if (!sameRect(window.get_frame_rect(), rect)) {
+            // Also when it is in place already: after a re-enable or a
+            // maximize a late frame of this size must be known as old.
+            this._remember(window, rect);
+            if (!sameRect(window.get_frame_rect(), rect))
                 moves.push([window, rect]);
-                this._remember(window, rect);
-            }
         }
         return moves;
     }
