@@ -81,6 +81,8 @@ export class Tiler {
         this._requested = new Map();
         // Window -> the last few sizes asked of it, "WxH" (see _learnMinSize).
         this._askedSizes = new Map();
+        // Window -> monotonic times of slots asked again (see _mayAskAgain).
+        this._reasks = new Map();
         // The focused window's move held back until covered windows have moved.
         this._settle = null;
         this._store = new LayoutStore(settings,
@@ -130,6 +132,7 @@ export class Tiler {
         this._trees.clear();
         this._requested.clear();
         this._askedSizes.clear();
+        this._reasks.clear();
         this._lastFocused = null;
         this._grabbedWindow = null;
     }
@@ -308,16 +311,36 @@ export class Tiler {
     }
 
     // Mutter ignores a move to the rect a window still has while an earlier
-    // move is not drawn yet, so once the client draws a size other than the
-    // last one asked for, the slot is asked for again.
+    // move is not drawn yet; the client then draws that earlier size, and the
+    // slot is asked for again. A size the client picked itself (a terminal
+    // fitting whole cells, an app resizing itself) is left alone: asking again
+    // would make the two pull the size back and forth.
     _onFrameChanged(window) {
         const requested = this._requested.get(window);
         const tree = this._windows.get(window);
         if (!requested || !tree || window === this._grabbedWindow)
             return;
         const frame = window.get_frame_rect();
-        if (this._learnMinSize(window, frame, requested) || !sameRect(frame, requested))
+        if (this._learnMinSize(window, frame, requested))
             this._queueRelayout();
+        else if (!sameRect(frame, requested) && this._isStale(window, frame) && this._mayAskAgain(window))
+            this._queueRelayout();
+    }
+
+    // Whether the frame has a size asked of the window before the current one.
+    _isStale(window, frame) {
+        const asked = this._askedSizes.get(window) ?? [];
+        return asked.slice(0, -1).includes(`${frame.width}x${frame.height}`);
+    }
+
+    // At most a few repeated asks a second, should a client keep going back.
+    _mayAskAgain(window) {
+        const now = GLib.get_monotonic_time();
+        const asks = (this._reasks.get(window) ?? []).filter(time => now - time < 2 * GLib.USEC_PER_SEC);
+        if (asks.length >= 4)
+            return false;
+        this._reasks.set(window, [...asks, now]);
+        return true;
     }
 
     // Some clients cannot be as small as their slot (Chrome is at least 500 px
@@ -332,9 +355,7 @@ export class Tiler {
             return false;
         const seq = window.get_stable_sequence();
         const old = minSizes.get(seq) ?? {width: 0, height: 0};
-        const asked = this._askedSizes.get(window) ?? [];
-        const stale = asked.slice(0, -1).includes(`${frame.width}x${frame.height}`);
-        const moved = frame.x === requested.x && frame.y === requested.y && !stale;
+        const moved = frame.x === requested.x && frame.y === requested.y && !this._isStale(window, frame);
         const learn = (size, wanted, known) => {
             if (moved && size > wanted)
                 return size;
@@ -358,6 +379,7 @@ export class Tiler {
         this._windows.delete(window);
         this._requested.delete(window);
         this._askedSizes.delete(window);
+        this._reasks.delete(window);
         minSizes.delete(window.get_stable_sequence());
         floatingSeqs.delete(window.get_stable_sequence());
         if (this._lastFocused === window)
