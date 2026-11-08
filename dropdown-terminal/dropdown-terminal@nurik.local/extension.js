@@ -14,6 +14,8 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 const SLIDE_MS = 160;
 // Longest wait for the window to take its new size before it slides in.
 const PLACE_TIMEOUT_MS = 300;
+// Longest wait for the first frame of a window that may have drawn it already.
+const DRAWN_TIMEOUT_MS = 500;
 
 // The module outlives disable and enable (GNOME re-enables an extension when
 // one enabled before it is turned off, also on screen lock), so the running
@@ -111,7 +113,7 @@ export default class DropdownTerminalExtension extends Extension {
             if (!window.minimized)
                 this._place(window, window.get_monitor());
         } else {
-            this._adoptNew(window);
+            this._adoptWhenDrawn(window);
         }
     }
 
@@ -168,8 +170,8 @@ export default class DropdownTerminalExtension extends Extension {
         if (alive()) {
             // Running but without a placed window: take it, else it is still starting.
             const window = global.display.list_all_windows().find(owns);
-            if (window?.get_compositor_private())
-                this._adoptNew(window);
+            if (window)
+                this._adoptWhenDrawn(window);
             return;
         }
         const launcher = new Gio.SubprocessLauncher({flags: Gio.SubprocessFlags.NONE});
@@ -192,30 +194,53 @@ export default class DropdownTerminalExtension extends Extension {
             return;
         // Out of the taskbar, Alt+Tab and the tiling before anyone sees it.
         setListed(window, false);
+        this._adoptWhenDrawn(window);
+    }
+
+    // Takes the window once it has drawn its first frame: mutter places it
+    // then and would undo our place. One that came while we were disabled may
+    // have drawn it already, so a short timeout takes it anyway.
+    _adoptWhenDrawn(window) {
         const actor = window.get_compositor_private();
         if (!actor) {
             this._adoptNew(window);
             return;
         }
+        if (this._pendingActors.has(actor))
+            return;
         // Hidden until it is in place at the top; mutter maps it in the middle.
         actor.opacity = 0;
         this._pendingActors.add(actor);
+        let timeoutId = 0;
+        const adopt = () => {
+            if (!this._pendingActors.delete(actor))
+                return;
+            actor.disconnectObject(this);
+            if (timeoutId) {
+                GLib.source_remove(timeoutId);
+                this._idleIds.delete(timeoutId);
+            }
+            // first-frame comes while a frame is painted, and restacking
+            // then (make_above) aborts mutter, so this waits for idle.
+            const id = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                this._idleIds.delete(id);
+                if (!current() && window.get_compositor_private() && owns(window))
+                    this._adoptNew(window);
+                return GLib.SOURCE_REMOVE;
+            });
+            this._idleIds.add(id);
+        };
         actor.connectObject(
-            'first-frame', () => {
-                this._pendingActors.delete(actor);
-                actor.disconnectObject(this);
-                // first-frame comes while a frame is painted, and restacking
-                // then (make_above) aborts mutter, so this waits for idle.
-                const id = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-                    this._idleIds.delete(id);
-                    if (!current() && window.get_compositor_private() && owns(window))
-                        this._adoptNew(window);
-                    return GLib.SOURCE_REMOVE;
-                });
-                this._idleIds.add(id);
-            },
+            'first-frame', adopt,
             'destroy', () => this._pendingActors.delete(actor),
             this);
+        timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, DRAWN_TIMEOUT_MS, () => {
+            this._idleIds.delete(timeoutId);
+            timeoutId = 0;
+            adopt();
+            return GLib.SOURCE_REMOVE;
+        });
+        this._idleIds.add(timeoutId);
     }
 
     _adoptNew(window) {

@@ -249,10 +249,12 @@ wait_for 'dt.ext().state !== 1' || echo "extension did not stop"
 eval_js "Main.extensionManager.enableExtension(\"$uuid\"); true" >/dev/null
 wait_for 'dt.ext().state === 1 && dt.atTop(0)' || echo "extension did not enable"
 eval_js 'globalThis.seq = dt.term().get_stable_sequence(); globalThis.oldSettings = dt.ext().stateObj._settings; true' >/dev/null
+# Watched at every change, not only at the end: enable() would hide a lapse.
+eval_js 'globalThis.lapse = false; dt.term().connect("notify::above", w => { lapse ||= !w.above; }); dt.term().connect("notify::skip-taskbar", w => { lapse ||= !w.is_skip_taskbar(); }); true' >/dev/null
 eval_js 'Main.screenShield.lock(false); true' >/dev/null
 wait_for 'Main.sessionMode.currentMode === "unlock-dialog"' || echo "the screen did not lock"
-check "while locked it is re-enabled and the terminal stays above, out of the list" \
-    'dt.ext().state === 1 && dt.ext().stateObj._settings !== oldSettings && dt.term().above && dt.term().is_skip_taskbar()'
+check "while locked it is re-enabled and the terminal never stops being above, out of the list" \
+    'dt.ext().state === 1 && dt.ext().stateObj._settings !== oldSettings && !lapse && dt.term().above && dt.term().is_skip_taskbar()'
 eval_js 'Main.screenShield.deactivate(false); true' >/dev/null
 wait_for 'Main.sessionMode.currentMode !== "unlock-dialog"' || echo "the screen did not unlock"
 check "and the terminal is the same one, still at the top" \
