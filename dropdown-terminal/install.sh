@@ -37,24 +37,23 @@ if uuid in disabled:
 EOF
 gsettings set org.gnome.shell disable-user-extensions false
 
-# With Auto Tiling installed, the terminal is one of its floating apps, so it
-# never lands in the layout, not even for a frame before it goes on top.
+# Older versions put the terminal into Auto Tiling's floating apps; it now
+# stays out of the tiling by itself, so the entry goes.
 tiling="$HOME/.local/share/gnome-shell/extensions/auto-tiling@nurik.local/schemas"
 if [ -d "$tiling" ]; then
-    app_id="$(gsettings --schemadir "$dest/schemas" get org.gnome.shell.extensions.dropdown-terminal app-id)"
-    python3 -I - "$tiling" "${app_id//\'/}" <<'EOF'
+    python3 -I - "$tiling" <<'PY'
 import ast
 import subprocess
 import sys
 
-schemas, app_id = sys.argv[1:]
-cmd = ['gsettings', '--schemadir', schemas]
+cmd = ['gsettings', '--schemadir', sys.argv[1]]
 key = ['org.gnome.shell.extensions.auto-tiling', 'floating-apps']
 out = subprocess.run(cmd + ['get'] + key, check=True, capture_output=True, text=True).stdout
 apps = ast.literal_eval(out.replace('@as ', ''))
-if app_id not in apps:
-    subprocess.run(cmd + ['set'] + key + [str(apps + [app_id])], check=True)
-EOF
+if 'org.nurik.DropdownTerminal' in apps:
+    kept = [a for a in apps if a != 'org.nurik.DropdownTerminal']
+    subprocess.run(cmd + ['set'] + key + [str(kept)], check=True)
+PY
 fi
 
 echo "Готово: файлы в $dest, расширение включено."

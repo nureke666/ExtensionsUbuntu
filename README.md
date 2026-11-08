@@ -7,7 +7,7 @@
 | Расширение | Что делает | Клавиши |
 |---|---|---|
 | [auto-tiling](auto-tiling/README.md) | авто-тайлинг в стиле i3: новое окно делит экран, отступы между окнами, рамка вокруг окна в фокусе, работает с несколькими мониторами | Super+стрелки и др. |
-| [dropdown-terminal](dropdown-terminal/README.md) | терминал, который выпадает сверху экрана и прячется той же клавишей | Super+Enter |
+| [dropdown-terminal](dropdown-terminal/README.md) | терминал без рамки, выезжает сверху экрана и уезжает той же клавишей; внутри tmux или обычная оболочка | Super+Enter |
 | [notification-island](notification-island/README.md) | уведомления «пилюлей» по центру верхней панели, как Dynamic Island | — |
 | [screenshot-paste](screenshot-paste/README.md) | скриншот экрана, вставка в чат и Enter одной клавишей | Alt+M |
 
@@ -55,7 +55,7 @@ rm -rf ~/.local/share/gnome-shell/extensions/<uuid>          # удалить с
 | Расширение | Как проверить |
 |---|---|
 | auto-tiling | `node --test auto-tiling/tests/*.test.js` и `./auto-tiling/tests/e2e.sh` (два монитора, клавиши, окна) |
-| dropdown-terminal | `./dropdown-terminal/tests/e2e.sh` (два монитора, настоящий gnome-terminal, Super+Enter) |
+| dropdown-terminal | `./dropdown-terminal/tests/e2e.sh` (два монитора, Super+Enter, tmux и обычная оболочка) |
 | screenshot-paste | `./screenshot-paste/tests/e2e.sh` (Alt+M на русской раскладке → вставка и Enter) |
 | notification-island | автотестов нет; вложенная сессия и `notify-send`, см. его README |
 
