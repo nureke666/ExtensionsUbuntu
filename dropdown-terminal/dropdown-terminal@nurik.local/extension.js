@@ -283,10 +283,12 @@ export default class DropdownTerminalExtension extends Extension {
         this._cancelWaitPlaced();
         actor.remove_all_transitions();
         this._hiding = true;
+        const unclip = this._clipAtTop(window, actor);
         actor.ease({
             translation_y: -this._slideDistance(window),
             duration: SLIDE_MS,
             mode: Clutter.AnimationMode.EASE_IN_QUAD,
+            onStopped: unclip,
             onComplete: () => {
                 this._hiding = false;
                 actor.translation_y = 0;
@@ -323,12 +325,14 @@ export default class DropdownTerminalExtension extends Extension {
             this._cancelWaitPlaced();
             if (current() !== window || !window.get_compositor_private())
                 return;
+            const unclip = this._clipAtTop(window, actor);
             actor.opacity = 255;
             actor.translation_y = -this._slideDistance(window);
             actor.ease({
                 translation_y: 0,
                 duration: SLIDE_MS,
                 mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                onStopped: unclip,
             });
         };
         if (sameRect(window.get_frame_rect(), target)) {
@@ -358,6 +362,26 @@ export default class DropdownTerminalExtension extends Extension {
         wait.window.disconnectObject(wait.owner);
         if (wait.timeoutId)
             GLib.source_remove(wait.timeoutId);
+    }
+
+    // While it slides, the window is cut off at the top of its monitor's work
+    // area: a monitor above would show it otherwise. Returns the undo.
+    _clipAtTop(window, actor) {
+        const monitor = window.get_monitor();
+        if (monitor < 0)
+            return () => {};
+        const top = Main.layoutManager.getWorkAreaForMonitor(monitor).y;
+        const clip = () => {
+            const cut = Math.min(actor.height, Math.max(0, top - actor.y - actor.translation_y));
+            actor.set_clip(0, cut, actor.width, actor.height - cut);
+        };
+        const owner = {};
+        actor.connectObject('notify::translation-y', clip, owner);
+        clip();
+        return () => {
+            actor.disconnectObject(owner);
+            actor.remove_clip();
+        };
     }
 
     // From its place to just above the top of its monitor's work area.

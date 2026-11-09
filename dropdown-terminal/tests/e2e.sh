@@ -119,7 +119,8 @@ globalThis.dt = {
         const w = dt.term();
         return !!w && !w.minimized && global.display.focus_window === w && w.above &&
             w.is_on_all_workspaces() && w.is_skip_taskbar() &&
-            w.get_compositor_private().translation_y === 0 && w.get_compositor_private().opacity === 255;
+            w.get_compositor_private().translation_y === 0 && w.get_compositor_private().opacity === 255 &&
+            !w.get_compositor_private().has_clip;
     },
     hidden: () => !!dt.term() && dt.term().minimized,
     atTop: m => {
@@ -152,6 +153,20 @@ globalThis.dt = {
         return true;
     },
     made: 0,
+    /* Counts painted frames of a slide, and those with some of the terminal
+       drawn above the top of its monitor's work area (on a monitor above). */
+    watchSlide: () => {
+        const w = dt.term(), a = w.get_compositor_private();
+        const top = Main.layoutManager.getWorkAreaForMonitor(w.get_monitor()).y;
+        dt.slide = {frames: 0, above: 0};
+        dt.slide.id = global.stage.connect("after-paint", () => {
+            if (a.translation_y === 0) return;
+            dt.slide.frames++;
+            const [, cy, , ch] = a.has_clip ? a.get_clip() : [0, 0, 0, a.height];
+            if (ch > 0 && a.y + a.translation_y + cy < top - 0.5) dt.slide.above++;
+        });
+        return true;
+    },
     dump: () => global.display.list_all_windows().filter(w => w.get_window_type() === 0).map(w => {
         const f = w.get_frame_rect(), a = w.get_compositor_private();
         return \`\${w.title} \${w.get_gtk_application_id()} m\${w.get_monitor()} \${f.x},\${f.y} \${f.width}x\${f.height}\` +
@@ -253,10 +268,14 @@ eval_js 'dt.setClip("KEPT")' >/dev/null
 keys $SHIFT_PGUP $SHIFT_UP $SHIFT_UP $CTRL_SHIFT_C
 check "or Ctrl+Shift+C copies" "$(lines 'l.length === 3 && l[0] !== "KEPT"')"
 
+eval_js 'dt.watchSlide()' >/dev/null
 press
 check "the next press slides it away" 'dt.hidden()'
 press
 check "and back" 'dt.shown() && dt.atTop(0)'
+check "sliding, nothing of it shows above its monitor's top, as on a monitor above" \
+    'dt.slide.frames >= 6 && dt.slide.above === 0'
+eval_js 'global.stage.disconnect(dt.slide.id); true' >/dev/null
 
 # The D-Bus object behind copying used to be gone once GJS collected garbage,
 # about 10 s after the terminal started.
