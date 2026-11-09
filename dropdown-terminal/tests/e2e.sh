@@ -173,20 +173,27 @@ check "it has no frame and is out of the taskbar and Alt+Tab" \
     '(() => { const w = dt.term(), b = w.get_buffer_rect(), f = w.get_frame_rect(); return w.is_skip_taskbar() && b.width === f.width && b.height === f.height; })()'
 shell_check "tmux (the default) runs the session \"dropdown\" on a server of its own" \
     'tmuxd has-session -t dropdown'
+started=$SECONDS
 
-# A mouse drag in tmux from the middle to the top edge: tmux scrolls up while
-# the pointer is there, and on release the selection goes to the clipboard.
+# A mouse drag in the terminal from $1 to $2 (fractions of its height), held
+# there for $3 s before the release.
+drag() {
+    eval_js "dt.at(0.01, $1) && dt.button(true)" >/dev/null
+    sleep 0.2
+    eval_js "dt.at(0.01, ($1 + $2) / 2)" >/dev/null
+    sleep 0.2
+    eval_js "dt.at(0.01, $2)" >/dev/null
+    sleep "$3"
+    eval_js 'dt.button(false)' >/dev/null
+}
+
+# From the middle to the top edge: tmux scrolls up while the pointer is there,
+# and on release the selection goes to the clipboard.
 tmuxd send-keys -t dropdown 'clear; seq -f "line %g" 300' Enter
 sleep 1
 top=$(tmuxd capture-pane -p -t dropdown | grep -m1 -o 'line [0-9]*' | cut -d' ' -f2)
 made=$(eval_js 'dt.made' | grep -o '[0-9]*' | tail -1)
-eval_js 'dt.at(0.01, 0.5) && dt.button(true)' >/dev/null
-sleep 0.2
-eval_js 'dt.at(0.01, 0.3)' >/dev/null
-sleep 0.2
-eval_js 'dt.at(0.01, 0.01)' >/dev/null
-sleep 1.5
-eval_js 'dt.button(false)' >/dev/null
+drag 0.5 0.01 1.5
 check "a mouse selection in tmux goes to the clipboard, with the lines scrolled to past the top" \
     "(t => { const l = t.split(String.fromCharCode(10)); return /^line [0-9]+$/.test(l[0]) && parseInt(l[0].slice(5)) < $top && l.includes('line $top'); })(dt.clip())"
 check "no window pops up for it, the terminal keeps the focus" "dt.made === $made && dt.shown()"
@@ -195,6 +202,14 @@ press
 check "the next press slides it away" 'dt.hidden()'
 press
 check "and back" 'dt.shown() && dt.atTop(0)'
+
+# The D-Bus object behind copying used to be gone once GJS collected garbage,
+# about 10 s after the terminal started.
+(( started + 12 > SECONDS )) && sleep $(( started + 12 - SECONDS ))
+tmuxd send-keys -t dropdown 'clear; seq -f "again %g" 300' Enter
+sleep 1
+drag 0.2 0.5 0.3
+check "copying still works later" "dt.clip().startsWith('again ')"
 
 press
 eval_js 'global.workspace_manager.get_workspace_by_index(1).activate(global.get_current_time()); true' >/dev/null
