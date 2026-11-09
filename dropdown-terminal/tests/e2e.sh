@@ -145,6 +145,12 @@ globalThis.dt = {
         St.Clipboard.get_default().get_text(St.ClipboardType.CLIPBOARD, (c, text) => { dt.clipText = text ?? ""; });
         return dt.clipText ?? "";
     },
+    setClip: text => { St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, text); dt.clipText = text; return true; },
+    wheel: (up, n) => {
+        for (let i = 0; i < n; i++)
+            ptr.notify_discrete_scroll(G.get_monotonic_time(), up ? C.ScrollDirection.UP : C.ScrollDirection.DOWN, C.ScrollSource.WHEEL);
+        return true;
+    },
     made: 0,
     dump: () => global.display.list_all_windows().filter(w => w.get_window_type() === 0).map(w => {
         const f = w.get_frame_rect(), a = w.get_compositor_private();
@@ -176,13 +182,16 @@ shell_check "tmux (the default) runs the session \"dropdown\" on a server of its
 started=$SECONDS
 
 # A mouse drag in the terminal from $1 to $2 (fractions of its height), held
-# there for $3 s before the release.
+# there for $3 s before the release. GTK holds a motion back until the next
+# one, so the pointer moves a little at the end, as a hand does.
 drag() {
     eval_js "dt.at(0.01, $1) && dt.button(true)" >/dev/null
     sleep 0.2
     eval_js "dt.at(0.01, ($1 + $2) / 2)" >/dev/null
     sleep 0.2
     eval_js "dt.at(0.01, $2)" >/dev/null
+    sleep 0.05
+    eval_js "dt.at(0.012, $2)" >/dev/null
     sleep "$3"
     eval_js 'dt.button(false)' >/dev/null
 }
@@ -197,6 +206,52 @@ drag 0.5 0.01 1.5
 check "a mouse selection in tmux goes to the clipboard, with the lines scrolled to past the top" \
     "(t => { const l = t.split(String.fromCharCode(10)); return /^line [0-9]+$/.test(l[0]) && parseInt(l[0].slice(5)) < $top && l.includes('line $top'); })(dt.clip())"
 check "no window pops up for it, the terminal keeps the focus" "dt.made === $made && dt.shown()"
+
+lines() {  # a check on the clipboard's lines, l
+    echo "(l => $1)(dt.clip().split(String.fromCharCode(10)))"
+}
+in_mode() {
+    [ "$(tmuxd display -p -t dropdown '#{pane_in_mode}')" = 1 ]
+}
+# Straight past the top edge, onto the top bar: tmux scrolls on.
+tmuxd send-keys -t dropdown 'clear; seq -f "line %g" 300' Enter
+sleep 1
+top=$(tmuxd capture-pane -p -t dropdown | grep -m1 -o 'line [0-9]*' | cut -d' ' -f2)
+drag 0.5 -0.05 1.5
+check "a selection dragged straight past the top edge scrolls on" \
+    "$(lines "parseInt(l[0].slice(5)) < $top - 10 && l.includes('line $top')")"
+# Past the bottom edge: on tmux's status line VTE used to stop tmux scrolling,
+# and a release there or below copied nothing.
+eval_js 'dt.setClip("EMPTY") && dt.at(0.5, 0.5) && dt.wheel(true, 10)' >/dev/null
+sleep 0.5
+drag 0.3 1.1 1
+check "a selection dragged past the bottom edge scrolls on and is copied on release" "$(lines 'l.length > 20')"
+shell_check "and tmux leaves the selection" '! in_mode'
+
+# VTE used to empty what the terminal had copied on Ctrl+Shift+C with
+# nothing selected in VTE.
+echo "copied by the terminal" | gjs -m "$XDG_DATA_HOME/gnome-shell/extensions/$uuid/copy.js"
+wait_for 'dt.clip().startsWith("copied by the terminal")' || echo "copy.js did not copy"
+eval_js 'dt.key(29, 42, 46)' >/dev/null
+sleep 1
+check "Ctrl+Shift+C with nothing selected leaves the clipboard as it is" 'dt.clip().startsWith("copied by the terminal")' 1
+# Keys: Shift+PgUp scrolls, Shift+arrows select, Enter or Ctrl+Shift+C copies.
+keys() {  # one press per argument, e.g. 42,103 for Shift+Up
+    for k in "$@"; do
+        eval_js "dt.key($k)" >/dev/null
+        sleep 0.15
+    done
+}
+SHIFT_PGUP=42,104 SHIFT_UP=42,103 ENTER=28 CTRL_SHIFT_C=29,42,46
+tmuxd send-keys -t dropdown -X cancel
+keys $SHIFT_PGUP
+shell_check "Shift+PgUp scrolls tmux up" 'in_mode && [ "$(tmuxd display -p -t dropdown "#{scroll_position}")" -gt 0 ]'
+keys $SHIFT_UP $SHIFT_UP $SHIFT_UP $ENTER
+check "Shift+arrows select, Enter copies" "$(lines 'l.length === 4 && l[0] !== "KEPT"')"
+shell_check "and leave the scrolled view" '! in_mode'
+eval_js 'dt.setClip("KEPT")' >/dev/null
+keys $SHIFT_PGUP $SHIFT_UP $SHIFT_UP $CTRL_SHIFT_C
+check "or Ctrl+Shift+C copies" "$(lines 'l.length === 3 && l[0] !== "KEPT"')"
 
 press
 check "the next press slides it away" 'dt.hidden()'

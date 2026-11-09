@@ -65,6 +65,53 @@ function serveCopy(terminal) {
         Gio.BusNameOwnerFlags.ALLOW_REPLACEMENT | Gio.BusNameOwnerFlags.REPLACE, null, null);
 }
 
+// Runs a tmux command on the terminal's tmux server.
+function tmux(...args) {
+    try {
+        Gio.Subprocess.new(['tmux', '-L', 'dropdown', ...args],
+            Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE);
+    } catch (e) {
+        printerr(`Dropdown Terminal: ${e.message}`);
+    }
+}
+
+// A mouse selection dragged onto tmux's status line or below it: VTE tells
+// tmux the pointer is on the status line, and that stops tmux scrolling. tmux
+// is told the last row of its pane instead, and VTE nothing.
+function scrollDragPastBottom(terminal) {
+    const TOP_PADDING = 6;
+    const statusTop = () => TOP_PADDING + (terminal.get_row_count() - 1) * terminal.get_char_height();
+    // Button 1 went down above the status line, without Shift (with Shift the
+    // selection is VTE's own).
+    let dragging = false;
+    let last = '';
+    terminal.connect('button-press-event', (_widget, event) => {
+        const [, button] = event.get_button();
+        const [, state] = event.get_state();
+        const [, , y] = event.get_coords();
+        dragging = button === 1 && !(state & Gdk.ModifierType.SHIFT_MASK) && y < statusTop();
+        last = '';
+        return false;
+    });
+    terminal.connect('motion-notify-event', (_widget, event) => {
+        const [, state] = event.get_state();
+        const [, x, y] = event.get_coords();
+        if (!dragging || !(state & Gdk.ModifierType.BUTTON1_MASK) || y < statusTop()) {
+            last = '';
+            return false;
+        }
+        const rows = terminal.get_row_count(), cols = terminal.get_column_count();
+        const col = Math.min(cols, Math.max(1, Math.floor(x / terminal.get_char_width()) + 1));
+        // A drag with button 1 in SGR mouse mode, which tmux asks for.
+        const report = `\x1b[<32;${col};${rows - 1}M`;
+        if (report !== last) {
+            last = report;
+            terminal.feed_child(new TextEncoder().encode(report));
+        }
+        return true;
+    });
+}
+
 // Not unique on the bus: the extension knows its window by its own Wayland
 // client, and the gnome-terminal of older versions used this id too.
 const app = new Gtk.Application({
@@ -104,11 +151,15 @@ app.connect('activate', () => {
     settings.connect('changed::font', applyLook);
     watchDefaultFont(applyLook);
 
+    const argv = command();
+    const inTmux = argv[0] === 'tmux';
+
     const css = new Gtk.CssProvider();
     css.load_from_data(new TextEncoder().encode('vte-terminal { padding: 6px 10px; }'));
     terminal.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 
-    // Ctrl+Shift+C/V copy and paste, Ctrl+plus/minus/0 zoom.
+    // Ctrl+Shift+C/V copy and paste, Ctrl+plus/minus/0 zoom, Shift+PgUp/PgDn
+    // scroll.
     terminal.connect('key-press-event', (_widget, event) => {
         const [, state] = event.get_state();
         const [, keyval] = event.get_keyval();
@@ -116,7 +167,19 @@ app.connect('activate', () => {
         const ctrl = Gdk.ModifierType.CONTROL_MASK, shift = Gdk.ModifierType.SHIFT_MASK;
         const key = Gdk.keyval_to_lower(keyval);
         if (mods === (ctrl | shift) && key === Gdk.KEY_c) {
-            terminal.copy_clipboard_format(Vte.Format.TEXT);
+            // A selection made with Shift is the terminal's own, any other is
+            // tmux's. With nothing selected the clipboard stays as it is.
+            if (terminal.get_has_selection())
+                terminal.copy_clipboard_format(Vte.Format.TEXT);
+            else if (inTmux)
+                tmux('if-shell', '-F', '-t', 'dropdown:', '#{selection_present}',
+                    'send-keys -t dropdown: -X copy-pipe-and-cancel ; display-message -d 1500 Скопировано');
+            return true;
+        }
+        // VTE would scroll its own history, which is empty under tmux: tmux
+        // gets the keys and scrolls its own.
+        if (inTmux && mods === shift && [Gdk.KEY_Page_Up, Gdk.KEY_Page_Down].includes(keyval)) {
+            terminal.feed_child(new TextEncoder().encode(keyval === Gdk.KEY_Page_Up ? '\x1b[5;2~' : '\x1b[6;2~'));
             return true;
         }
         if (mods === (ctrl | shift) && key === Gdk.KEY_v) {
@@ -139,8 +202,10 @@ app.connect('activate', () => {
     });
 
     serveCopy(terminal);
+    if (inTmux)
+        scrollDragPastBottom(terminal);
     terminal.connect('child-exited', () => app.quit());
-    terminal.spawn_async(Vte.PtyFlags.DEFAULT, GLib.get_home_dir(), command(), null,
+    terminal.spawn_async(Vte.PtyFlags.DEFAULT, GLib.get_home_dir(), argv, null,
         GLib.SpawnFlags.SEARCH_PATH, null, -1, null, (_terminal, _pid, error) => {
             if (error) {
                 printerr(`Dropdown Terminal: ${error.message}`);
