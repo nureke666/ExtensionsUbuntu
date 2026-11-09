@@ -76,6 +76,12 @@ function setListed(window, listed) {
         state.client.hide_from_window_list(window);
 }
 
+// wl-copy and wl-paste (Claude Code copies with them) open a 1x1 window for a
+// moment: GNOME gives the clipboard only to the focused client.
+function isClipboardHelper(window) {
+    return window.title === 'wl-clipboard' && !window.get_wm_class();
+}
+
 function sameRect(a, b) {
     return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 }
@@ -435,8 +441,8 @@ export default class DropdownTerminalExtension extends Extension {
         if (!window || window.minimized || this._hiding || !focused || focused === window ||
             !this._settings.get_boolean('hide-on-unfocus'))
             return;
-        // Its own dialogs keep it open.
-        if (focused.get_transient_for() === window || owns(focused))
+        // Its own dialogs keep it open, and so does a copy from inside it.
+        if (focused.get_transient_for() === window || owns(focused) || isClipboardHelper(focused))
             return;
         this._hide(window);
     }

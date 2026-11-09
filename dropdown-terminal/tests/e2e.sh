@@ -302,6 +302,18 @@ press
 check "a press brings the terminal back to the front instead of hiding it" 'dt.shown()'
 
 dset hide-on-unfocus true
+# Claude Code copies with wl-copy, which on GNOME takes the focus for a moment
+# with a 1x1 window; the terminal slid away on every copy.
+if command -v wl-copy >/dev/null; then
+    for flag in --primary ""; do
+        printf 'copied with wl-copy' | WAYLAND_DISPLAY=dt-e2e timeout 5 wl-copy $flag
+    done
+    sleep 0.5
+    check "hide-on-unfocus keeps it open on a copy with wl-copy" \
+        'dt.clip() === "copied with wl-copy" && dt.shown()'
+else
+    echo "skip hide-on-unfocus keeps it open on a copy with wl-copy (no wl-clipboard)"
+fi
 eval_js 'dt.win("other").activate(global.get_current_time()); true' >/dev/null
 check "hide-on-unfocus slides it away when another window gets the focus" 'dt.hidden()'
 dset hide-on-unfocus false
@@ -394,8 +406,10 @@ kill $(jobs -p) 2>/dev/null
 tmuxd kill-server
 wait 2>/dev/null
 # Up to the shell's own shutdown: what its last garbage collection says then
-# is not seen by anyone.
+# is not seen by anyone. Mutter itself complains about the window of wl-copy,
+# with no extension at all.
 if sed '/Shutting down GNOME Shell/,$d' "$T/shell.log" |
+    grep -v "meta_window_set_stack_position_no_sync: assertion 'window->stack_position >= 0' failed" |
     grep -E "JS ERROR|Bail out|CRITICAL|crashed|Dropdown Terminal:|dropdown-terminal@nurik.local"; then
     echo "FAIL errors in the shell log"
     failed=1
