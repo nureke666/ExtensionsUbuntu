@@ -48,15 +48,18 @@ const COPY_IFACE = `<node><interface name="org.nurik.DropdownTerminal.Clipboard"
     <method name="Copy"><arg type="s" direction="in"/></method>
 </interface></node>`;
 
+// Kept here: once GJS collects it, the object is gone from the bus.
+let copyService = null;
+
 // What is selected in tmux reaches the clipboard through copy.js and this
 // D-Bus method: the terminal has the focus, so it may set the clipboard.
 function serveCopy(terminal) {
-    const service = Gio.DBusExportedObject.wrapJSObject(COPY_IFACE, {
+    copyService = Gio.DBusExportedObject.wrapJSObject(COPY_IFACE, {
         Copy(text) {
             Gtk.Clipboard.get_default(terminal.get_display()).set_text(text, -1);
         },
     });
-    service.export(Gio.DBus.session, '/org/nurik/DropdownTerminal/Clipboard');
+    copyService.export(Gio.DBus.session, '/org/nurik/DropdownTerminal/Clipboard');
     // A newer terminal takes the name over from one still on its way out.
     Gio.bus_own_name_on_connection(Gio.DBus.session, 'org.nurik.DropdownTerminal.Clipboard',
         Gio.BusNameOwnerFlags.ALLOW_REPLACEMENT | Gio.BusNameOwnerFlags.REPLACE, null, null);
