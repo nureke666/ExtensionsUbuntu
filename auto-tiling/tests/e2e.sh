@@ -105,7 +105,7 @@ start_shell() {
         sleep 0.5
     done
     eval_js "$(tr '\n' ' ' <<'EOF'
-const C = imports.gi.Clutter, G = imports.gi.GLib;
+const C = imports.gi.Clutter, G = imports.gi.GLib, St = imports.gi.St;
 const seat = C.get_default_backend().get_default_seat();
 const kb = seat.create_virtual_device(C.InputDeviceType.KEYBOARD_DEVICE);
 const ptr = seat.create_virtual_device(C.InputDeviceType.POINTER_DEVICE);
@@ -147,6 +147,10 @@ globalThis.at = {
         codes.forEach(c => send(c, C.KeyState.PRESSED));
         codes.reverse().forEach(c => send(c, C.KeyState.RELEASED));
         return true;
+    },
+    clip: () => {
+        St.Clipboard.get_default().get_text(St.ClipboardType.CLIPBOARD, (c, text) => { at.clipText = text ?? ""; });
+        return at.clipText ?? "";
     },
     pointer: (x, y) => { ptr.notify_absolute_motion(G.get_monotonic_time(), x, y); return true; },
     dump: () => `auto-tiling state ${at.ext()?.state} ${at.ext()?.error ?? ""} | ` +
@@ -362,6 +366,24 @@ check "and one that shrinks by itself fills its slot again" \
     'at.fills("K3") && k3.some(h => h < at.r("K3").height - 20)'
 eval_js 'at.windows().forEach(w => w.delete(0)); true' >/dev/null
 wait_for 'at.windows().length === 0' || echo "windows did not close"
+
+# Claude Code copies with wl-copy, which on GNOME opens a 1x1 window titled
+# wl-clipboard for a moment; tiled, it squeezed the other windows.
+if command -v wl-copy >/dev/null; then
+    open_window V
+    wait_for 'at.inSlot("V")' || echo "V not tiled"
+    eval_js 'globalThis.vMoves = 0; at.win("V").connect("size-changed", () => vMoves++); true' >/dev/null
+    for flag in --primary ""; do
+        printf 'copied with wl-copy' | WAYLAND_DISPLAY=at-e2e timeout 5 wl-copy $flag
+    done
+    sleep 0.5
+    check "a copy with wl-copy moves no window" \
+        'at.clip() === "copied with wl-copy" && vMoves === 0 && at.inSlot("V")'
+    eval_js 'at.windows().forEach(w => w.delete(0)); true' >/dev/null
+    wait_for 'at.windows().length === 0' || echo "windows did not close"
+else
+    echo "skip a copy with wl-copy moves no window (no wl-clipboard)"
+fi
 
 # Screen lock: GNOME disables and re-enables every extension enabled after one
 # that stops on the lock screen. Re-enabling auto-tiling here puts it last.
