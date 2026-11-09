@@ -131,6 +131,12 @@ globalThis.at = {
         return !!slot && slot.x === f.x && slot.y === f.y && slot.width === f.width && slot.height === f.height;
     },
     floating: t => at.tiler()._windows.get(at.win(t)) === null,
+    fills: t => {
+        const w = at.win(t), tree = w && at.tiler()._windows.get(w);
+        const slot = tree && at.tiler()._layout(tree).get(w), f = w?.get_frame_rect();
+        return !!slot && slot.x === f.x && slot.y === f.y && f.width <= slot.width && f.height <= slot.height &&
+            slot.width - f.width < 10 && slot.height - f.height < 20;
+    },
     atSlot: t => {
         const w = at.win(t), tree = w && at.tiler()._windows.get(w);
         const slot = tree && at.tiler()._layout(tree).get(w), f = w?.get_frame_rect();
@@ -162,7 +168,7 @@ EOF
 }
 start_shell
 
-SUPER=125 SHIFT=42 CTRL=29 ALT=56 LEFT=105 RIGHT=106 UP=103 EQUAL=13 R=19 F=33
+SUPER=125 SHIFT=42 CTRL=29 ALT=56 LEFT=105 RIGHT=106 UP=103 EQUAL=13 R=19 F=33 KEY_T=20 KEY_W=17
 
 # The next login: the apps open in another order and take their old slots.
 if [ "$phase" = next-login ]; then
@@ -339,6 +345,21 @@ open_window K2 cells
 wait_for 'at.atSlot("K1") && at.atSlot("K2") && at.r("K1").x < at.r("K2").x' || echo "K1 and K2 not tiled"
 eval_js "at.activate('K1') && at.key($SUPER, $SHIFT, $RIGHT)" >/dev/null
 check "windows sized in whole cells swap places" 'at.atSlot("K1") && at.atSlot("K2") && at.r("K1").x > at.r("K2").x'
+eval_js 'at.windows().forEach(w => w.delete(0)); true' >/dev/null
+wait_for 'at.windows().length === 0' || echo "windows did not close"
+
+# A terminal opening its tab bar grows by the bar by itself. Taller than the
+# work area, mutter pushed it up past the top of the screen; closing the tabs
+# shrank it back and left a strip under it.
+open_window K3 tabs
+wait_for 'at.fills("K3")' || echo "K3 not tiled"
+eval_js 'globalThis.k3 = []; at.win("K3").connect("size-changed", () => k3.push(at.r("K3").height)); true' >/dev/null
+eval_js "at.activate('K3') && at.key($CTRL, $SHIFT, $KEY_T)" >/dev/null
+check "a window that grows out of its slot by itself goes back into it" \
+    'at.fills("K3") && k3.some(h => h > at.r("K3").height + 20)'
+eval_js "k3.length = 0; at.key($CTRL, $SHIFT, $KEY_W)" >/dev/null
+check "and one that shrinks by itself fills its slot again" \
+    'at.fills("K3") && k3.some(h => h < at.r("K3").height - 20)'
 eval_js 'at.windows().forEach(w => w.delete(0)); true' >/dev/null
 wait_for 'at.windows().length === 0' || echo "windows did not close"
 

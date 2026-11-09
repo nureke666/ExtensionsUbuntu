@@ -86,6 +86,9 @@ export class Tiler {
         this._askedSizes = new Map();
         // Window -> monotonic times of slots asked again (see _mayAskAgain).
         this._reasks = new Map();
+        // Window -> {time, frame} of the last move asked of it: when, and the
+        // frame the window answered with, "x,y,WxH" (see _changedItself).
+        this._asks = new Map();
         // The focused window's move held back until covered windows have moved.
         this._settle = null;
         // Window -> {rect, timeoutId} of a move not taken yet (see _ensureMoved).
@@ -140,6 +143,7 @@ export class Tiler {
         this._requested.clear();
         this._askedSizes.clear();
         this._reasks.clear();
+        this._asks.clear();
         this._lastFocused = null;
         this._grabbedWindow = null;
     }
@@ -319,19 +323,40 @@ export class Tiler {
 
     // Mutter ignores a move to the rect a window still has while an earlier
     // move is not drawn yet; the client then draws that earlier size, and the
-    // slot is asked for again. A size the client picked itself (a terminal
-    // fitting whole cells, an app resizing itself) is left alone: asking again
-    // would make the two pull the size back and forth.
+    // slot is asked for again. The size a client answers a move with (a
+    // terminal fitting whole cells) is left alone: asking again would make the
+    // two pull the size back and forth. A size it takes later by itself is not.
     _onFrameChanged(window) {
         const requested = this._requested.get(window);
         const tree = this._windows.get(window);
         if (!requested || !tree || window === this._grabbedWindow)
             return;
         const frame = window.get_frame_rect();
+        const itself = this._changedItself(window, frame);
         if (this._learnMinSize(window, frame, requested))
             this._queueRelayout();
-        else if (!sameRect(frame, requested) && this._isStale(window, frame) && this._mayAskAgain(window))
+        // One frame comes with both size-changed and position-changed.
+        else if (!sameRect(frame, requested) && (this._isStale(window, frame) || itself) &&
+            (this._relayoutId || this._mayAskAgain(window)))
             this._queueRelayout();
+    }
+
+    _ask(window) {
+        this._asks.set(window, {time: GLib.get_monotonic_time(), frame: null});
+    }
+
+    // Whether the window changed its frame by itself, not in answer to a move:
+    // a terminal opening or closing its tab bar grows or shrinks by the bar,
+    // and mutter pushes a window taller than the work area up past its top.
+    // The answer is the first frame within MOVE_TIMEOUT_MS of a move.
+    _changedItself(window, frame) {
+        if (window.get_maximized() || window.fullscreen)
+            return false;
+        const ask = this._asks.get(window);
+        const now = `${frame.x},${frame.y},${frame.width}x${frame.height}`;
+        if (ask && !ask.frame && GLib.get_monotonic_time() - ask.time <= MOVE_TIMEOUT_MS * 1000)
+            ask.frame = now;
+        return ask?.frame !== now;
     }
 
     // Whether the frame has a size asked of the window before the current one.
@@ -387,6 +412,7 @@ export class Tiler {
         this._requested.delete(window);
         this._askedSizes.delete(window);
         this._reasks.delete(window);
+        this._asks.delete(window);
         this._cancelMoveCheck(window);
         minSizes.delete(window.get_stable_sequence());
         floatingSeqs.delete(window.get_stable_sequence());
@@ -749,6 +775,7 @@ export class Tiler {
         if (window.get_maximized())
             window.unmaximize(window.get_maximized());
         const before = window.get_frame_rect();
+        this._ask(window);
         window.move_resize_frame(false, rect.x, rect.y, rect.width, rect.height);
         this._ensureMoved(window, rect, before);
     }
@@ -773,8 +800,10 @@ export class Tiler {
             const requested = this._requested.get(window);
             if (this._windows.get(window) && requested && sameRect(requested, rect) &&
                 sameRect(now, before) && now.width <= rect.width && now.height <= rect.height &&
-                window !== this._grabbedWindow && !window.get_maximized() && !window.fullscreen)
+                window !== this._grabbedWindow && !window.get_maximized() && !window.fullscreen) {
+                this._ask(window);
                 window.move_frame(false, rect.x, rect.y);
+            }
             return GLib.SOURCE_REMOVE;
         });
         this._moveChecks.set(window, {rect, timeoutId});
@@ -843,6 +872,7 @@ export class Tiler {
         const frame = window.get_frame_rect();
         const width = Math.min(frame.width, area.width);
         const height = Math.min(frame.height, area.height);
+        this._ask(window);
         window.move_resize_frame(false,
             area.x + Math.round((area.width - width) / 2),
             area.y + Math.round((area.height - height) / 2),
