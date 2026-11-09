@@ -63,6 +63,13 @@ function sameRect(a, b) {
     return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 }
 
+// wl-copy and wl-paste (Claude Code copies with them) open a 1x1 window for a
+// moment: GNOME gives the clipboard only to the focused client. Tiled, it
+// squeezed the other windows for that moment.
+function isClipboardHelper(window) {
+    return window.title === 'wl-clipboard' && !window.get_wm_class();
+}
+
 function byCreation(a, b) {
     return a.get_stable_sequence() - b.get_stable_sequence();
 }
@@ -479,7 +486,7 @@ export class Tiler {
             return false;
         if (window.get_window_type() !== Meta.WindowType.NORMAL)
             return false;
-        if (window.get_transient_for() || window.is_attached_dialog())
+        if (window.get_transient_for() || window.is_attached_dialog() || isClipboardHelper(window))
             return false;
         // Always-on-top windows (a drop-down terminal, a video) float over the rest.
         if (window.is_skip_taskbar() || window.above || !this._isResizable(window))
