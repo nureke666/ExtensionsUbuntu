@@ -26,6 +26,9 @@ const MOVE_GRAB_OPS = [
 ];
 // Longest time the focused window waits for windows it would cover (see _relayout).
 const SETTLE_TIMEOUT_MS = 500;
+// Longest wait for a window to take its new place before it is moved there
+// at the size it has (see _ensureMoved).
+const MOVE_TIMEOUT_MS = 300;
 // Tree key for the windows of a monitor that does not switch workspaces.
 const ALL_WORKSPACES = 'all-workspaces';
 const MONITOR_DIRECTIONS = {
@@ -85,6 +88,8 @@ export class Tiler {
         this._reasks = new Map();
         // The focused window's move held back until covered windows have moved.
         this._settle = null;
+        // Window -> {rect, timeoutId} of a move not taken yet (see _ensureMoved).
+        this._moveChecks = new Map();
         this._store = new LayoutStore(settings,
             new Set(global.display.list_all_windows().map(window => window.get_stable_sequence())),
             this._connectedMonitors());
@@ -117,6 +122,8 @@ export class Tiler {
         this._cancelSettle();
         this._unmaximizeIds.forEach(id => GLib.source_remove(id));
         this._unmaximizeIds.clear();
+        this._moveChecks.forEach(check => GLib.source_remove(check.timeoutId));
+        this._moveChecks.clear();
         this._store.stash(this._trees);
         this._store.destroy();
         global.display.disconnectObject(this);
@@ -380,6 +387,7 @@ export class Tiler {
         this._requested.delete(window);
         this._askedSizes.delete(window);
         this._reasks.delete(window);
+        this._cancelMoveCheck(window);
         minSizes.delete(window.get_stable_sequence());
         floatingSeqs.delete(window.get_stable_sequence());
         if (this._lastFocused === window)
@@ -740,7 +748,44 @@ export class Tiler {
         // Half-maximized (edge-tiled) windows refuse to resize otherwise.
         if (window.get_maximized())
             window.unmaximize(window.get_maximized());
+        const before = window.get_frame_rect();
         window.move_resize_frame(false, rect.x, rect.y, rect.width, rect.height);
+        this._ensureMoved(window, rect, before);
+    }
+
+    // Mutter moves a window it also resizes only with the client's next frame.
+    // A client that keeps its size (a terminal rounding the slot to the cells
+    // it has) draws none until something changes in it, and the window stayed
+    // where it was, under another one. Moved to its slot at the size it has,
+    // if that fits the slot (a bigger one could reach onto the next monitor).
+    _ensureMoved(window, rect, before) {
+        const frame = window.get_frame_rect();
+        if (frame.x === rect.x && frame.y === rect.y) {
+            this._cancelMoveCheck(window);
+            return;
+        }
+        if (sameRect(this._moveChecks.get(window)?.rect ?? {}, rect))
+            return;
+        this._cancelMoveCheck(window);
+        const timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, MOVE_TIMEOUT_MS, () => {
+            this._moveChecks.delete(window);
+            const now = window.get_frame_rect();
+            const requested = this._requested.get(window);
+            if (this._windows.get(window) && requested && sameRect(requested, rect) &&
+                sameRect(now, before) && now.width <= rect.width && now.height <= rect.height &&
+                window !== this._grabbedWindow && !window.get_maximized() && !window.fullscreen)
+                window.move_frame(false, rect.x, rect.y);
+            return GLib.SOURCE_REMOVE;
+        });
+        this._moveChecks.set(window, {rect, timeoutId});
+    }
+
+    _cancelMoveCheck(window) {
+        const check = this._moveChecks.get(window);
+        if (check) {
+            GLib.source_remove(check.timeoutId);
+            this._moveChecks.delete(window);
+        }
     }
 
     // Moves `window` to `rect` once every window in `before` (window -> its

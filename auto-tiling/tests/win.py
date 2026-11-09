@@ -13,7 +13,8 @@ window.set_default_size(500, 350)
 # 'fixed' makes a non-resizable window, which must stay floating; 'max' opens
 # maximized, like a browser that remembers it; 'wide' cannot be narrower than
 # 700 px (like Chrome's 500 px); 'small' cannot be bigger than 600x400, so it
-# never fills its slot (like a terminal sized in whole cells).
+# never fills its slot; 'cells' is sized in steps of 10x20 px, like a
+# terminal in whole cells.
 mode = sys.argv[2] if len(sys.argv) > 2 else ''
 if mode == 'fixed':
     window.set_resizable(False)
@@ -25,6 +26,11 @@ elif mode == 'small':
     hints = Gdk.Geometry()
     hints.max_width, hints.max_height = 600, 400
     window.set_geometry_hints(None, hints, Gdk.WindowHints.MAX_SIZE)
+elif mode == 'cells':
+    hints = Gdk.Geometry()
+    hints.base_width, hints.base_height = 0, 0
+    hints.width_inc, hints.height_inc = 10, 20
+    window.set_geometry_hints(None, hints, Gdk.WindowHints.BASE_SIZE | Gdk.WindowHints.RESIZE_INC)
 label = Gtk.Label(label=sys.argv[1])
 window.add(label)
 window.connect('destroy', Gtk.main_quit)

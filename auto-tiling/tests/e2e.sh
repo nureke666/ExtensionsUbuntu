@@ -131,6 +131,11 @@ globalThis.at = {
         return !!slot && slot.x === f.x && slot.y === f.y && slot.width === f.width && slot.height === f.height;
     },
     floating: t => at.tiler()._windows.get(at.win(t)) === null,
+    atSlot: t => {
+        const w = at.win(t), tree = w && at.tiler()._windows.get(w);
+        const slot = tree && at.tiler()._layout(tree).get(w), f = w?.get_frame_rect();
+        return !!slot && slot.x === f.x && slot.y === f.y;
+    },
     key: (...codes) => {
         const send = (c, s) => kb.notify_key(G.get_monotonic_time(), c, s);
         codes.forEach(c => send(c, C.KeyState.PRESSED));
@@ -325,6 +330,17 @@ eval_js 'at.settings().reset("keep-workspace"); true' >/dev/null
 eval_js 'at.windows().forEach(w => w.delete(0)); global.workspace_manager.get_workspace_by_index(0).activate(global.get_current_time()); true' >/dev/null
 wait_for 'at.windows().length === 0 && global.workspace_manager.get_active_workspace_index() === 0' ||
     echo "did not go back to workspace 1"
+
+# Windows sized in whole cells (terminals) keep their size when swapped, draw
+# nothing, and mutter waited for a frame to move them: they stayed on top of
+# each other.
+open_window K1 cells
+open_window K2 cells
+wait_for 'at.atSlot("K1") && at.atSlot("K2") && at.r("K1").x < at.r("K2").x' || echo "K1 and K2 not tiled"
+eval_js "at.activate('K1') && at.key($SUPER, $SHIFT, $RIGHT)" >/dev/null
+check "windows sized in whole cells swap places" 'at.atSlot("K1") && at.atSlot("K2") && at.r("K1").x > at.r("K2").x'
+eval_js 'at.windows().forEach(w => w.delete(0)); true' >/dev/null
+wait_for 'at.windows().length === 0' || echo "windows did not close"
 
 # Screen lock: GNOME disables and re-enables every extension enabled after one
 # that stops on the lock screen. Re-enabling auto-tiling here puts it last.
