@@ -107,7 +107,7 @@ done
 
 # Helpers for the checks. Monitor 1 is right of monitor 0.
 eval_js "$(tr '\n' ' ' <<EOF
-const C = imports.gi.Clutter, G = imports.gi.GLib, M = imports.gi.Meta;
+const C = imports.gi.Clutter, G = imports.gi.GLib, M = imports.gi.Meta, St = imports.gi.St;
 const seat = C.get_default_backend().get_default_seat();
 const kb = seat.create_virtual_device(C.InputDeviceType.KEYBOARD_DEVICE);
 const ptr = seat.create_virtual_device(C.InputDeviceType.POINTER_DEVICE);
@@ -136,6 +136,16 @@ globalThis.dt = {
         return true;
     },
     pointer: (x, y) => { ptr.notify_absolute_motion(G.get_monotonic_time(), x, y); return true; },
+    at: (fx, fy) => { const f = dt.term().get_frame_rect(); return dt.pointer(f.x + f.width * fx, f.y + f.height * fy); },
+    button: down => {
+        ptr.notify_button(G.get_monotonic_time(), C.BUTTON_PRIMARY, down ? C.ButtonState.PRESSED : C.ButtonState.RELEASED);
+        return true;
+    },
+    clip: () => {
+        St.Clipboard.get_default().get_text(St.ClipboardType.CLIPBOARD, (c, text) => { dt.clipText = text ?? ""; });
+        return dt.clipText ?? "";
+    },
+    made: 0,
     dump: () => global.display.list_all_windows().filter(w => w.get_window_type() === 0).map(w => {
         const f = w.get_frame_rect(), a = w.get_compositor_private();
         return \`\${w.title} \${w.get_gtk_application_id()} m\${w.get_monitor()} \${f.x},\${f.y} \${f.width}x\${f.height}\` +
@@ -143,6 +153,7 @@ globalThis.dt = {
             \` focus=\${global.display.focus_window === w} ty=\${a?.translation_y} op=\${a?.opacity}\`;
     }).join(" | "),
 };
+global.display.connect("window-created", () => dt.made++);
 true
 EOF
 )" >/dev/null
@@ -162,6 +173,23 @@ check "it has no frame and is out of the taskbar and Alt+Tab" \
     '(() => { const w = dt.term(), b = w.get_buffer_rect(), f = w.get_frame_rect(); return w.is_skip_taskbar() && b.width === f.width && b.height === f.height; })()'
 shell_check "tmux (the default) runs the session \"dropdown\" on a server of its own" \
     'tmuxd has-session -t dropdown'
+
+# A mouse drag in tmux from the middle to the top edge: tmux scrolls up while
+# the pointer is there, and on release the selection goes to the clipboard.
+tmuxd send-keys -t dropdown 'clear; seq -f "line %g" 300' Enter
+sleep 1
+top=$(tmuxd capture-pane -p -t dropdown | grep -m1 -o 'line [0-9]*' | cut -d' ' -f2)
+made=$(eval_js 'dt.made' | grep -o '[0-9]*' | tail -1)
+eval_js 'dt.at(0.01, 0.5) && dt.button(true)' >/dev/null
+sleep 0.2
+eval_js 'dt.at(0.01, 0.3)' >/dev/null
+sleep 0.2
+eval_js 'dt.at(0.01, 0.01)' >/dev/null
+sleep 1.5
+eval_js 'dt.button(false)' >/dev/null
+check "a mouse selection in tmux goes to the clipboard, with the lines scrolled to past the top" \
+    "(t => { const l = t.split(String.fromCharCode(10)); return /^line [0-9]+$/.test(l[0]) && parseInt(l[0].slice(5)) < $top && l.includes('line $top'); })(dt.clip())"
+check "no window pops up for it, the terminal keeps the focus" "dt.made === $made && dt.shown()"
 
 press
 check "the next press slides it away" 'dt.hidden()'

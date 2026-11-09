@@ -56,5 +56,8 @@ if 'org.nurik.DropdownTerminal' in apps:
 PY
 fi
 
+# A running tmux of the terminal keeps its old config until told to reload.
+tmux -L dropdown source-file "$dest/tmux.conf" 2>/dev/null || true
+
 echo "Готово: файлы в $dest, расширение включено."
 echo "Выйди из системы и зайди снова, чтобы GNOME его загрузил."
