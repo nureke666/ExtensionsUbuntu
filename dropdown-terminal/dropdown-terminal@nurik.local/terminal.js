@@ -44,6 +44,24 @@ function command() {
     return [Vte.get_user_shell() || GLib.getenv('SHELL') || '/bin/bash'];
 }
 
+const COPY_IFACE = `<node><interface name="org.nurik.DropdownTerminal.Clipboard">
+    <method name="Copy"><arg type="s" direction="in"/></method>
+</interface></node>`;
+
+// What is selected in tmux reaches the clipboard through copy.js and this
+// D-Bus method: the terminal has the focus, so it may set the clipboard.
+function serveCopy(terminal) {
+    const service = Gio.DBusExportedObject.wrapJSObject(COPY_IFACE, {
+        Copy(text) {
+            Gtk.Clipboard.get_default(terminal.get_display()).set_text(text, -1);
+        },
+    });
+    service.export(Gio.DBus.session, '/org/nurik/DropdownTerminal/Clipboard');
+    // A newer terminal takes the name over from one still on its way out.
+    Gio.bus_own_name_on_connection(Gio.DBus.session, 'org.nurik.DropdownTerminal.Clipboard',
+        Gio.BusNameOwnerFlags.ALLOW_REPLACEMENT | Gio.BusNameOwnerFlags.REPLACE, null, null);
+}
+
 // Not unique on the bus: the extension knows its window by its own Wayland
 // client, and the gnome-terminal of older versions used this id too.
 const app = new Gtk.Application({
@@ -117,6 +135,7 @@ app.connect('activate', () => {
         return false;
     });
 
+    serveCopy(terminal);
     terminal.connect('child-exited', () => app.quit());
     terminal.spawn_async(Vte.PtyFlags.DEFAULT, GLib.get_home_dir(), command(), null,
         GLib.SpawnFlags.SEARCH_PATH, null, -1, null, (_terminal, _pid, error) => {
