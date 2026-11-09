@@ -9,6 +9,7 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import {FocusBorder} from './border.js';
 import {Keybindings} from './keybindings.js';
 import {Tiler} from './tiler.js';
+import {WorkspaceGuard} from './workspaces.js';
 
 export default class AutoTilingExtension extends Extension {
     enable() {
@@ -16,12 +17,15 @@ export default class AutoTilingExtension extends Extension {
         this._tiler = new Tiler(this._settings);
         this._border = new FocusBorder(this._settings);
         this._keybindings = new Keybindings(this._settings, this._tiler);
+        this._workspaceGuard = new WorkspaceGuard(this._settings);
     }
 
     disable() {
         // GNOME may call disable twice in a row when several extensions change at once.
         if (!this._tiler)
             return;
+        this._workspaceGuard.destroy();
+        this._workspaceGuard = null;
         this._keybindings.destroy();
         this._keybindings = null;
         this._border.destroy();

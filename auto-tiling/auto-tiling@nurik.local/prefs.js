@@ -1,4 +1,4 @@
-// Settings window: gaps, border, layout memory, floating apps and keys.
+// Settings window: gaps, border, layout memory, workspaces, floating apps and keys.
 
 import Adw from 'gi://Adw';
 import Gdk from 'gi://Gdk';
@@ -84,6 +84,15 @@ function windowsPage(settings) {
     settings.bind('remember-layout', remember, 'active', Gio.SettingsBindFlags.DEFAULT);
     layout.add(remember);
     page.add(layout);
+
+    const workspaces = new Adw.PreferencesGroup({title: 'Рабочие столы'});
+    const keep = new Adw.SwitchRow({
+        title: 'Не давать окну утащить обратно',
+        subtitle: 'Приложение, которое выводит своё окно сразу после ухода с его стола (Claude, Telegram), не возвращает тебя туда',
+    });
+    settings.bind('keep-workspace', keep, 'active', Gio.SettingsBindFlags.DEFAULT);
+    workspaces.add(keep);
+    page.add(workspaces);
     return page;
 }
 

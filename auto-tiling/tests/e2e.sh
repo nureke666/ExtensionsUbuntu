@@ -298,6 +298,30 @@ else
     eval_js "at.dump()"
     failed=1
 fi
+
+# An app that brings its window up right after the user left its workspace
+# (Claude, Telegram). activate() called here switches like it: inside mutter.
+at_ws() { echo "global.workspace_manager.get_active_workspace_index() === $1"; }
+pull_back='at.ws(0).activate(global.get_current_time()); at.app("O"); true'
+eval_js 'at.ws = i => global.workspace_manager.get_workspace_by_index(i); true' >/dev/null
+eval_js 'at.app = t => at.win(t).activate(global.display.get_current_time_roundtrip()); true' >/dev/null
+eval_js "$pull_back" >/dev/null
+sleep 0.3
+check "a window does not take the user back to the workspace just left" "$(at_ws 0) && at.focus() !== 'O'"
+sleep 1.2
+eval_js 'at.app("O"); true' >/dev/null
+sleep 0.3
+check "later the window brings its workspace up as in GNOME" "$(at_ws 1) && at.focus() === 'O'"
+eval_js 'at.ws(0).activate(global.get_current_time()); at.ws(1).activate(global.get_current_time()); true' >/dev/null
+sleep 0.3
+check "the user going back at once stays back" "$(at_ws 1)"
+sleep 1.2
+eval_js 'at.settings().set_boolean("keep-workspace", false); true' >/dev/null
+eval_js "$pull_back" >/dev/null
+sleep 0.3
+check "with the setting off the window takes the user back" "$(at_ws 1) && at.focus() === 'O'"
+eval_js 'at.settings().reset("keep-workspace"); true' >/dev/null
+
 eval_js 'at.windows().forEach(w => w.delete(0)); global.workspace_manager.get_workspace_by_index(0).activate(global.get_current_time()); true' >/dev/null
 wait_for 'at.windows().length === 0 && global.workspace_manager.get_active_workspace_index() === 0' ||
     echo "did not go back to workspace 1"

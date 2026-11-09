@@ -33,6 +33,12 @@
       <summary>Corner radius of the window the border goes around (px)</summary>
     </key>
 
+    <key name="keep-workspace" type="b">
+      <default>true</default>
+      <summary>Do not let a window take the user back to the workspace just left</summary>
+      <description>An app that brings its window up within a second after the user left its workspace does not switch back to it.</description>
+    </key>
+
     <key name="floating-apps" type="as">
       <default>[]</default>
       <summary>Applications that never tile</summary>
